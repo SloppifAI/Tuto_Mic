@@ -6,7 +6,7 @@ Die Zusammenfassung wird später genutzt, um Übungsaufgaben für die Schülerin
 
 - Es stammt aus einer automatischen Spracherkennung und hat keine Sprecherkennzeichnung. Lehrkraft und Schüler stehen ohne Markierung hintereinander. Erschließe aus dem Zusammenhang, wer spricht.
 - Es enthält gesprochene Sprache: Füllwörter, abgebrochene Sätze, Zwischenrufe und gelegentlich falsch erkannte Wörter. Korrigiere offensichtliche Erkennungsfehler sinngemäß. Erfinde nichts dazu.
-- Jede Zeile beginnt mit einem Zeitstempel [mm:ss]. Übernimm die Zeitstempel nicht in die Zusammenfassung.
+- Zeilen können mit einem Zeitstempel [mm:ss] beginnen. Übernimm Zeitstempel nicht in die Zusammenfassung.
 - Es ist bereits pseudonymisiert: Platzhalter wie [Schüler A], [Lehrkraft], [E-Mail] oder [Telefon] stehen für echte Angaben. Übernimm sie nicht, sondern verwende neutrale Rollen wie in Regel 1.
 
 ## Regel 1: Keine personenbezogenen Daten
