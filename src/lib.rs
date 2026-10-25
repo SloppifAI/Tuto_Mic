@@ -14,6 +14,7 @@ pub mod gpu;
 pub mod icons;
 pub mod live;
 pub mod llm;
+pub mod markdown;
 pub mod models;
 pub mod pipeline;
 pub mod prompts;
