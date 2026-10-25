@@ -39,19 +39,31 @@
           cmake
           pkg-config
           clang
+          # Vulkan-Backend von whisper.cpp: Shader-Compiler glslc
+          shaderc.bin
         ] ++ runtimeLibs;
+
+        # Aufgebaut wie ein Vulkan-SDK (include/, lib/, bin/glslc): Dort sucht CMakes FindVulkan.
+        vulkanSdk = pkgs.symlinkJoin {
+          name = "vulkan-sdk";
+          paths = with pkgs; [ vulkan-headers vulkan-loader vulkan-loader.dev shaderc.bin ];
+        };
 
         env = {
           LIBCLANG_PATH = "${pkgs.libclang.lib}/lib"; # bindgen (whisper-rs-sys)
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}"; # rust-analyzer: Quellen der Standardbibliothek
+          # Laufzeit. vulkan-loader findet die Treiber (ICDs) unter NixOS selbst in /run/opengl-driver.
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibs;
+          VULKAN_SDK = "${vulkanSdk}";
+          # whisper-rs-sys linkt unter Linux `vulkan` ohne eigenen Suchpfad
+          LIBRARY_PATH = "${vulkanSdk}/lib";
         };
       in
       {
-        # CPU-Build: `nix develop`
+        # Standard: Vulkan (GPU; ohne GPU rechnet whisper.cpp auf der CPU): `nix develop`
         devShells.default = pkgs.mkShell (env // { packages = common; });
 
-        # NVIDIA-Build: `nix develop .#cuda`, dann `cargo run --features cuda`
+        # Zusätzlich CUDA (NVIDIA): `nix develop .#cuda`, dann `cargo run --features cuda`
         devShells.cuda =
           let
             cuda = pkgs.cudaPackages.cudatoolkit;
@@ -66,7 +78,7 @@
             # nur zur Compile-Zeit: GPU-Kernel nur für die eigene GPU bauen (spart sehr viel Build-Zeit)
             CUDAARCHS = "native";
             # Linker-Suchpfade (whisper-rs-sys sucht CUDA sonst nur unter /usr/local/cuda)
-            LIBRARY_PATH = "${cuda}/lib:${cuda}/lib/stubs:${culibosStub}/lib";
+            LIBRARY_PATH = "${cuda}/lib:${cuda}/lib/stubs:${culibosStub}/lib:${env.LIBRARY_PATH}";
             shellHook = ''
               # Laufzeit: echter Treiber (libcuda) aus NixOS + CUDA-Bibliotheken
               export LD_LIBRARY_PATH=/run/opengl-driver/lib:${cuda}/lib:$LD_LIBRARY_PATH

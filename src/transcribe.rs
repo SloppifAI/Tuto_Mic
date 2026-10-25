@@ -4,6 +4,7 @@ use crate::config::Config;
 use anyhow::{Context, Result};
 use regex::Regex;
 use std::fmt::Write as _;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -53,15 +54,29 @@ pub struct Segment {
     pub text: String,
 }
 
+fn load_model(model: &Path) -> Result<WhisperContext> {
+    let mut params = WhisperContextParameters::default();
+    params.gpu_device(crate::gpu::select_gpu());
+    WhisperContext::new_with_params(model, params)
+        .with_context(|| format!("Whisper-Modell nicht ladbar: {}", model.display()))
+}
+
+/// Lädt das Modell und startet Whisper einmal, ohne zu transkribieren. Erst beim Start wählt whisper.cpp das
+/// Gerät (GPU oder CPU, danach in [`crate::gpu::detected`]).
+pub fn probe_device(model: &Path) -> Result<()> {
+    load_model(model)?
+        .create_state()
+        .context("Whisper konnte nicht gestartet werden")?;
+    Ok(())
+}
+
 pub fn transcribe(
     samples: &[f32],
     cfg: &Config,
     progress: impl FnMut(i32) + 'static,
     abort: Arc<AtomicBool>,
 ) -> Result<Vec<Segment>> {
-    let model = &cfg.whisper_model;
-    let ctx = WhisperContext::new_with_params(model, WhisperContextParameters::default())
-        .with_context(|| format!("Whisper-Modell nicht ladbar: {}", model.display()))?;
+    let ctx = load_model(&cfg.whisper_model)?;
     let mut state = ctx.create_state().context("Whisper konnte nicht gestartet werden")?;
 
     let mut params = FullParams::new(SamplingStrategy::BeamSearch {
@@ -83,7 +98,11 @@ pub fn transcribe(
         log::warn!("VAD-Modell fehlt ({vad}) – Transkription ohne VAD");
     }
     params.set_progress_callback_safe(progress);
-    params.set_abort_callback_safe(move || abort.load(Ordering::Relaxed));
+    // whisper-rs 0.16 legt die Closure als `Box<dyn FnMut>` ab, liest sie im Callback aber als `F`. Nur wenn
+    // `F` selbst `Box<dyn FnMut() -> bool>` ist, passt beides zusammen. Sonst liest der Callback Zufallswerte
+    // und bricht sporadisch ab („failed to encode“; mit Vulkan fast immer).
+    let abort_callback: Box<dyn FnMut() -> bool> = Box::new(move || abort.load(Ordering::Relaxed));
+    params.set_abort_callback_safe(abort_callback);
 
     state
         .full(params, samples)

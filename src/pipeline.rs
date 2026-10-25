@@ -5,7 +5,7 @@
 use crate::anonymize::Pseudonymizer;
 use crate::config::Config;
 use crate::llm::Ollama;
-use crate::{audio, prompts, session, transcribe};
+use crate::{audio, gpu, prompts, session, transcribe};
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -212,6 +212,10 @@ fn transcribe_samples(
         abort,
     )?;
     drop(samples);
+    log.push(format!(
+        "Whisper: {}",
+        gpu::describe(gpu::compiled_backend(), gpu::detected().as_ref())
+    ));
     log.push(format!(
         "Transkription: {} Segmente in {:.1} s",
         segments.len(),

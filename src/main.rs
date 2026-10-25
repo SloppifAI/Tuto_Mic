@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use tuto_mic::{app, config, models, pipeline, prompts, session};
+use tuto_mic::{app, config, gpu, models, pipeline, prompts, session, transcribe};
 
 /// Tuto Mic – Unterricht aufnehmen, lokal transkribieren, pseudonymisieren und zusammenfassen.
 #[derive(Parser)]
@@ -30,10 +30,12 @@ enum Cmd {
     Download,
     /// Pfade von Konfiguration, Prompts und Sessions anzeigen.
     Paths,
+    /// Version, Whisper-Backend (GPU/CPU) und Modelle anzeigen.
+    Info,
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    gpu::init_logging(env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build());
     whisper_rs::install_logging_hooks();
     let cli = Cli::parse();
     let dev = cli.dev || std::env::var("TUTO_MIC_DEV").is_ok_and(|v| v == "1");
@@ -107,6 +109,27 @@ fn main() -> anyhow::Result<()> {
             println!("Prompts:       {}", prompts::override_dir().display());
             println!("Sessions:      {}", session::sessions_dir().display());
             println!("Modelle:       {}", config::models_dir().display());
+            Ok(())
+        }
+        Some(Cmd::Info) => {
+            let cfg = config::Config::load()?;
+            let state = |p: &std::path::Path| if p.is_file() { "vorhanden" } else { "fehlt" };
+            println!("Tuto Mic {}", env!("CARGO_PKG_VERSION"));
+            let whisper = &cfg.whisper_model;
+            // Erst beim Start von Whisper wählt whisper.cpp das Gerät; ohne Modell nur das eingebaute Backend.
+            if whisper.is_file() {
+                transcribe::probe_device(whisper)?;
+            }
+            println!(
+                "Whisper-Backend: {}",
+                gpu::describe(gpu::compiled_backend(), gpu::detected().as_ref())
+            );
+            println!("Whisper-Modell:  {} ({})", whisper.display(), state(whisper));
+            println!(
+                "VAD-Modell:      {} ({})",
+                cfg.vad_model.display(),
+                state(&cfg.vad_model)
+            );
             Ok(())
         }
     }

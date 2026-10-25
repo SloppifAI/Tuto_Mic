@@ -24,13 +24,18 @@ serde_json = "1.0.154"
 strsim = "0.11.1"
 symphonia = { version = "0.6.1", features = ["all"] }
 ureq = { version = "3.5.0", features = ["json"] }
-whisper-rs = { version = "0.16.0", features = ["log_backend"] }
+
+# GPU-Backend für whisper.cpp ohne Feature-Flag, je nach Plattform. Ohne passende GPU rechnet whisper.cpp auf
+# der CPU. Vulkan läuft mit den normalen Treibern von NVIDIA, AMD und Intel; Metal auf Apple Silicon.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+whisper-rs = { version = "0.16.0", features = ["log_backend", "vulkan"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16.0", features = ["log_backend", "metal"] }
 
 [features]
-# GPU-Backends für whisper.cpp – je nach Plattform beim Build aktivieren.
+# Zusätzlich CUDA (NVIDIA, schneller als Vulkan). ggml nimmt dann das CUDA-Gerät zuerst.
 cuda = ["whisper-rs/cuda"]
-vulkan = ["whisper-rs/vulkan"]
-metal = ["whisper-rs/metal"]
 
 [profile.dev.package."*"]
 # Abhängigkeiten (v. a. Resampling) auch im Debug-Build optimiert übersetzen.

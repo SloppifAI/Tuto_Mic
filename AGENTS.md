@@ -13,8 +13,9 @@ cargo clippy --all-targets -- -D warnings    # Lints (Regeln in Cargo.toml)
 cargo fmt                                    # Formatierung (rustfmt.toml)
 cargo deny check                             # Sicherheitslücken, Lizenzen (deny.toml)
 cargo machete                                # ungenutzte Abhängigkeiten
-cargo run -- --dev                           # GUI mit Dev-Modus
-nix develop .#cuda -c cargo run --release --features cuda -- --dev   # mit NVIDIA-GPU
+cargo run -- --dev                           # GUI mit Dev-Modus (Whisper per Vulkan/Metal auf der GPU)
+cargo run --release -- info                  # zeigt, ob Whisper die GPU findet
+nix develop .#cuda -c cargo run --release --features cuda -- --dev   # zusätzlich CUDA (NVIDIA)
 ```
 
 Vor dem Abschluss einer Aufgabe müssen `fmt`, `clippy` und `test` ohne Befund durchlaufen; die CI prüft

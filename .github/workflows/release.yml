@@ -24,21 +24,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 22.04 statt 24.04: ältere glibc, das Paket läuft so auf mehr Distributionen.
           - name: linux-x86_64
             os: ubuntu-22.04
-            features: ""
           - name: windows-x86_64
             os: windows-latest
-            features: ""
           - name: macos-arm64
             os: macos-14
-            features: metal
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - name: System-Abhängigkeiten (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libwayland-dev libclang-dev cmake
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libwayland-dev libclang-dev cmake libvulkan-dev
+      # Vulkan-Backend (Linux, Windows): Header und Shader-Compiler glslc aus dem LunarG-SDK, setzt VULKAN_SDK.
+      # Ubuntu 22.04 hat kein glslc-Paket. Gelinkt wird unter Linux gegen libvulkan aus apt (libvulkan.so.1).
+      - name: Vulkan-SDK
+        if: runner.os != 'macOS'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
       - name: libclang für bindgen (Windows)
         if: runner.os == 'Windows'
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
@@ -46,9 +51,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
+      # Das GPU-Backend legt Cargo.toml fest: Vulkan unter Linux und Windows, Metal unter macOS.
       - name: Build
-        shell: bash
-        run: cargo build --release --locked ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+        run: cargo build --release --locked
       - name: Paket schnüren
         shell: bash
         run: |
