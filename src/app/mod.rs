@@ -69,6 +69,8 @@ pub struct TutoMicApp {
     notice: Option<String>,
     /// Bestätigung nach dem Senden an Tuto.
     success: Option<String>,
+    /// Rückfrage „Auswertung verwerfen?“ offen.
+    confirm_discard: bool,
     delete: DeleteLast,
     download: Option<Download>,
     tuto: TutoPanel,
@@ -99,6 +101,7 @@ impl TutoMicApp {
             error,
             notice: None,
             success: None,
+            confirm_discard: false,
             delete: DeleteLast {
                 open: false,
                 minutes: 5,
@@ -126,6 +129,7 @@ impl TutoMicApp {
             error: None,
             notice: None,
             success: None,
+            confirm_discard: false,
             delete: DeleteLast {
                 open: false,
                 minutes: 5,
@@ -270,6 +274,19 @@ impl TutoMicApp {
             }
         }
         self.success = Some(text);
+    }
+
+    /// Nicht gesendete Auswertung verwerfen: Sitzung löschen (außer der Admin hat das Behalten eingestellt).
+    fn discard_outcome(&mut self) {
+        self.confirm_discard = false;
+        let Some(outcome) = self.outcome.take() else { return };
+        if self.cfg.keep_sessions_after_upload {
+            self.notice = Some("Auswertung verworfen. Die Daten bleiben erhalten (Einstellung).".into());
+        } else if let Err(e) = session::delete(&outcome.dir) {
+            self.error = Some(format!("{e:#}"));
+        } else {
+            self.notice = Some("Auswertung verworfen, die Daten auf diesem Rechner wurden gelöscht.".into());
+        }
     }
 
     fn models_missing(&self) -> bool {

@@ -177,8 +177,20 @@ impl TutoMicApp {
             self.tuto.ui_send(ui, &self.cfg, summary.as_deref());
         });
         ui.add_space(16.0);
-        if ui.button("Neue Aufnahme").clicked() {
-            self.outcome = None;
+        // Nicht gesendete Auswertungen nicht liegen lassen: Verwerfen löscht die Daten auf diesem Rechner.
+        if self.confirm_discard {
+            ui.horizontal(|ui| {
+                ui.label("Nicht gesendet. Auswertung verwerfen und die Daten auf diesem Rechner löschen?");
+                let danger = egui::Button::new(RichText::new("Verwerfen").color(Color32::WHITE)).fill(ROSE_600);
+                if ui.add(danger).clicked() {
+                    self.discard_outcome();
+                }
+                if ui.button("Abbrechen").clicked() {
+                    self.confirm_discard = false;
+                }
+            });
+        } else if ui.button("Verwerfen und neue Aufnahme").clicked() {
+            self.confirm_discard = true;
         }
     }
 }
