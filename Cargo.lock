@@ -4398,6 +4398,7 @@ dependencies = [
  "rubato",
  "serde",
  "serde_json",
+ "strsim",
  "symphonia",
  "tempfile",
  "ureq",
