@@ -39,6 +39,9 @@ struct NewLessonForm {
     topic: String,
 }
 
+/// Breite der Auswahlfelder für Stunde, Klasse und Fach, damit sie untereinander gleich breit stehen.
+const PICKER_WIDTH: f32 = 320.0;
+
 /// Gängige Schulfächer als Vorschläge. In Tuto ist das Fach Freitext, daher bleibt „Anderes Fach …“ möglich.
 const COMMON_SUBJECTS: &[&str] = &[
     "Deutsch",
@@ -586,7 +589,7 @@ impl TutoPanel {
                 let label = ui.label("Für welche Stunde?");
                 egui::ComboBox::from_id_salt("plan")
                     .selected_text(current)
-                    .width(320.0)
+                    .width(PICKER_WIDTH)
                     .show_ui(ui, |ui| {
                         for (plan, text) in options {
                             if ui.selectable_label(self.plan == plan, text).clicked() {
@@ -790,8 +793,12 @@ impl TutoPanel {
                         self.subject_picker(ui, l.id);
                         ui.end_row();
                         let l = ui.label("Thema");
-                        ui.add(egui::TextEdit::singleline(&mut self.form.topic).hint_text("z. B. Prozentrechnung"))
-                            .labelled_by(l.id);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.form.topic)
+                                .hint_text("z. B. Prozentrechnung")
+                                .desired_width(PICKER_WIDTH),
+                        )
+                        .labelled_by(l.id);
                         ui.end_row();
                     });
                 let valid = self.form.class_id.is_some()
@@ -828,6 +835,7 @@ impl TutoPanel {
             .find(|c| Some(c.id) == self.form.class_id)
             .map_or("–", |c| c.name.as_str());
         egui::ComboBox::from_id_salt("class")
+            .width(PICKER_WIDTH)
             .selected_text(current)
             .show_ui(ui, |ui| {
                 for class in &self.classes {
@@ -848,8 +856,12 @@ impl TutoPanel {
         subjects.retain(|s| seen.insert(s.to_lowercase()));
 
         if self.form.custom_subject {
-            ui.add(egui::TextEdit::singleline(&mut self.form.subject).hint_text("Fach eingeben"))
-                .labelled_by(label);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.form.subject)
+                    .hint_text("Fach eingeben")
+                    .desired_width(PICKER_WIDTH),
+            )
+            .labelled_by(label);
             return;
         }
         let shown = if self.form.subject.is_empty() {
@@ -858,6 +870,7 @@ impl TutoPanel {
             self.form.subject.as_str()
         };
         egui::ComboBox::from_id_salt("subject")
+            .width(PICKER_WIDTH)
             .selected_text(shown)
             .height(320.0)
             .show_ui(ui, |ui| {
