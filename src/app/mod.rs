@@ -1,8 +1,8 @@
 //! Desktop-Oberfläche. Für Lehrkräfte gibt es genau einen Ablauf auf einer Seite: aufnehmen → auswerten →
-//! Zusammenfassung prüfen → an Tuto senden. Einstellungen, Prompt-Editor und Rohdaten sind nur im Admin- bzw.
-//! Dev-Modus erreichbar.
+//! Zusammenfassung prüfen → an Tuto senden. Einstellungen gibt es nicht in der GUI (zentral per Datei oder
+//! Umgebungsvariablen, siehe `config`); Prompt-Editor und Rohdaten nur im Dev-Modus.
 
-mod admin;
+mod dev;
 mod screens;
 
 use crate::config::Config;
@@ -23,7 +23,6 @@ use std::time::Duration;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Main,
-    Settings,
     Prompts,
     Details,
 }
@@ -52,8 +51,6 @@ struct DeleteLast {
 /// Wie die App gestartet wurde.
 #[derive(Clone, Copy, Default)]
 pub struct Mode {
-    /// Einstellungen ändern (Admin), sonst gelten die Vorgaben.
-    pub admin: bool,
     /// Zusätzlich Prompt-Editor, Datei-Import, Original-Transkript und Log.
     pub dev: bool,
 }
@@ -72,7 +69,7 @@ pub struct TutoMicApp {
     delete: DeleteLast,
     download: Option<Download>,
     tuto: TutoPanel,
-    admin: admin::AdminState,
+    dev: dev::DevState,
     /// Zuletzt angezeigter Aufnahmefehler, damit „Schließen“ ihn nicht im nächsten Frame wieder öffnet.
     rec_error_seen: Option<String>,
 }
@@ -88,7 +85,7 @@ impl TutoMicApp {
             ),
         };
         Self {
-            admin: admin::AdminState::new(&cfg),
+            dev: dev::DevState::new(),
             cfg,
             mode,
             page: Page::Main,
@@ -114,7 +111,7 @@ impl TutoMicApp {
         theme::install(ctx);
         let cfg = Config::default();
         Self {
-            admin: admin::AdminState::new(&cfg),
+            dev: dev::DevState::new(),
             cfg,
             mode,
             page: Page::Main,
@@ -316,7 +313,7 @@ impl TutoMicApp {
                 theme::badge(ui, "DEV", theme::AMBER_600, theme::ROSE_50);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.mode.admin || self.mode.dev {
+                if self.mode.dev {
                     ui.menu_button("Menü", |ui| {
                         let mut go = |ui: &mut egui::Ui, page, label: &str| {
                             if ui.button(label).clicked() {
@@ -325,11 +322,8 @@ impl TutoMicApp {
                             }
                         };
                         go(ui, Page::Main, "Aufnahme");
-                        go(ui, Page::Settings, "Einstellungen");
-                        if self.mode.dev {
-                            go(ui, Page::Prompts, "Prompt");
-                            go(ui, Page::Details, "Transkript und Log");
-                        }
+                        go(ui, Page::Prompts, "Prompt");
+                        go(ui, Page::Details, "Transkript und Log");
                     });
                 }
                 self.tuto.ui_account(ui, &self.cfg);
@@ -343,7 +337,6 @@ impl TutoMicApp {
     fn draw(&mut self, ui: &mut egui::Ui) {
         self.draw_frame(ui, |app, ui| match app.page {
             Page::Main => app.main_page(ui),
-            Page::Settings => app.settings_page(ui),
             Page::Prompts => app.prompts_page(ui),
             Page::Details => app.details_page(ui),
         });

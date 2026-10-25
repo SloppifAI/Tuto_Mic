@@ -28,17 +28,27 @@ Mikrofon ──► Segmente (10 s, 16 kHz) ──► Whisper (lokal) ──► P
 
 ```sh
 tuto-mic                 # GUI
-tuto-mic --admin         # GUI mit Einstellungen (Klassenliste, Modelle, Tuto-Adresse); auch TUTO_MIC_ADMIN=1
 tuto-mic --dev           # GUI mit Dev-Modus
 tuto-mic download        # Whisper- und VAD-Modell laden (~550 MB, alternativ per Button in der GUI)
 tuto-mic process stunde.mp3 [--no-llm]   # ohne GUI, z. B. zum Prompt-Testen
 tuto-mic process stunde.txt              # fertiges Transkript: ohne Whisper direkt pseudonymisieren und zusammenfassen
 tuto-mic paths           # Pfade von Konfiguration, Prompts, Sessions, Modellen
+tuto-mic info            # Version, Whisper-Backend (GPU oder CPU), Modelle
 ```
 
 `process` entscheidet nach der Endung: `.txt` und `.md` gelten als Text-Transkript (UTF-8, z. B. Demo-Daten),
 alles andere als Audiodatei. Für Transkripte braucht es kein Whisper-Modell; in `export.json` sind dann
 `audio_seconds` und `models.transcription` `null`.
+
+## Konfiguration
+
+Lehrkräfte sehen keine Einstellungen. Es gelten Standardwerte; Betreuer ändern sie zentral:
+
+- Datei `config.json` (Pfad: `tuto-mic paths`, oder per `TUTO_MIC_CONFIG=/pfad/config.json` z. B. für alle Nutzer)
+- Umgebungsvariablen `TUTO_MIC_*`, die Vorrang vor der Datei haben
+
+`tuto-mic info` zeigt die gültigen Werte und alle Variablen (Tuto-Adresse, Höchstlänge, Ollama, Modelle,
+Klassenliste …).
 
 ### An Tuto senden
 
@@ -79,8 +89,8 @@ Mit Nix (empfohlen, enthält Rust, rust-analyzer, cmake, clang, die GUI-/Audio-B
 Mit direnv lädt `.envrc` die Umgebung automatisch, auch für den Editor (`direnv allow`).
 
 ```sh
-nix develop                  # CPU
-nix develop .#cuda           # NVIDIA, dann: cargo run --release --features cuda
+nix develop                  # Standard: Whisper auf der GPU per Vulkan
+nix develop .#cuda           # zusätzlich CUDA, dann: cargo run --release --features cuda
 cargo run -- --dev
 ```
 
@@ -97,25 +107,45 @@ cargo machete                               # ungenutzte Abhängigkeiten
 Regeln für Beiträge (auch für KI-Agenten): `AGENTS.md`.
 
 Ohne Nix: Rust (stable), cmake, clang/libclang; unter Linux zusätzlich
-`libasound2-dev libxkbcommon-dev libwayland-dev`.
+`libasound2-dev libxkbcommon-dev libwayland-dev libvulkan-dev glslc` (Ubuntu ab 24.04; älter: Vulkan-SDK
+von LunarG), unter Windows das [Vulkan-SDK](https://vulkan.lunarg.com/sdk/home) mit gesetztem `VULKAN_SDK`.
 
-GPU-Features: `cuda` (NVIDIA), `vulkan` (AMD/Intel/NVIDIA), `metal` (macOS). Ohne Feature läuft Whisper
-auf der CPU – funktioniert, ist für 45 min Unterricht aber deutlich langsamer.
+#### GPU
+
+Whisper nutzt die GPU ohne Feature-Flag, auch in den Release-Paketen:
+
+- **Linux, Windows:** Vulkan – läuft mit den normalen Treibern von NVIDIA, AMD und Intel.
+- **macOS:** Metal.
+- **`--features cuda`** (optional, nur NVIDIA, braucht das CUDA-Toolkit, unter Nix `nix develop .#cuda`):
+  zusätzlich CUDA, schneller als Vulkan. ggml wählt dann zuerst das CUDA-Gerät.
+
+Findet whisper.cpp keine passende GPU, rechnet es auf der CPU – das funktioniert, ist für 45 min Unterricht
+aber deutlich langsamer. Was tatsächlich genutzt wird, zeigt `tuto-mic info` und jede `log.txt`
+(z. B. `Whisper: Vulkan (GPU: Vulkan0)`).
+
+Messung (RTX 3080 Laptop, large-v3-turbo, Beam 5): 33 min Unterricht mit Vulkan in 64 s, mit CUDA in
+etwa 66 s; 2,5 min Audio mit Vulkan in 5–6 s, auf der CPU (i7, ausgelastete Maschine) nach 16 min erst zu
+31 % fertig.
+
+Auf Laptops mit zwei GPUs nimmt Tuto Mic die dedizierte statt der integrierten GPU (`src/gpu.rs`).
+
+Die Linux- und Windows-Programme brauchen zur Laufzeit die Vulkan-Bibliothek (`libvulkan.so.1` bzw.
+`vulkan-1.dll`). Sie gehört zu jedem aktuellen Grafiktreiber; fehlt sie (z. B. Server oder VM ohne
+Grafiktreiber), startet das Programm nicht (Linux: Paket `libvulkan1` installieren).
 
 ### Builds
 
 GitHub Actions:
 
 - `ci.yml`: bei jedem Push und Pull Request Formatierung, Lints, Tests und Abhängigkeitsprüfung (nur Linux).
-- `release.yml`: Builds für Linux, Windows und macOS (Apple Silicon, Metal). Ein Tag wie `v0.1.0` erzeugt ein
+- `release.yml`: Builds für Linux und Windows (Vulkan) sowie macOS (Apple Silicon, Metal). Ein Tag wie `v0.1.0` erzeugt ein
   GitHub-Release mit den Paketen zum Download; von Hand gestartet („Run workflow“) nur Test-Artefakte.
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0   # Release erstellen
 ```
 
-Noch offen: GPU-Builds für Linux/Windows (CUDA/Vulkan), Signierung (macOS-Notarisierung, Windows-Code-Signing),
-Installer.
+Noch offen: Signierung (macOS-Notarisierung, Windows-Code-Signing), Installer.
 
 ### Aufbau
 
@@ -127,6 +157,7 @@ Installer.
 | `src/recorder.rs` | Mikrofon (cpal), Resampling, Segment-Dateien, rückwirkendes Löschen |
 | `src/audio.rs` | Audio laden/dekodieren (symphonia), Resampling auf 16 kHz (rubato) |
 | `src/transcribe.rs` | whisper.cpp über whisper-rs |
+| `src/gpu.rs` | Whisper-Backend: eingebaut (Vulkan/Metal/CUDA) und zur Laufzeit gewählt (GPU oder CPU) |
 | `src/anonymize.rs` | Pseudonymisierung |
 | `src/llm.rs` | Ollama-HTTP-API |
 | `src/tuto/`, `src/tuto_panel.rs` | Tuto-Anbindung: Anmeldung (PKCE), Schnittstelle, Token-Ablage, CLI bzw. GUI |

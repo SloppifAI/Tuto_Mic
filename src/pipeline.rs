@@ -5,7 +5,7 @@
 use crate::anonymize::Pseudonymizer;
 use crate::config::Config;
 use crate::llm::Ollama;
-use crate::{audio, prompts, session, transcribe};
+use crate::{audio, gpu, prompts, session, transcribe};
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -255,6 +255,10 @@ fn transcribe_samples(
     })?;
     drop(samples);
     log.push(format!(
+        "Whisper: {}",
+        gpu::describe(gpu::compiled_backend(), gpu::detected().as_ref())
+    ));
+    log.push(format!(
         "Transkription: {} Segmente in {:.1} s",
         segments.len(),
         t.elapsed().as_secs_f64()
@@ -469,6 +473,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut opts = options(&url);
         opts.cfg.class_list.clear();
+        opts.cfg.summary_limit = 5000;
         let log = run_finish(dir.path(), &opts).log.join("\n");
         assert!(log.contains("Klassenliste ist leer"), "{log}");
         assert!(log.contains("höchstens 5000"), "{log}");

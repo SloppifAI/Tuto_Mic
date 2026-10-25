@@ -9,6 +9,7 @@ pub mod audio;
 pub mod config;
 pub mod control;
 pub mod deeplink;
+pub mod gpu;
 pub mod icons;
 pub mod llm;
 pub mod models;

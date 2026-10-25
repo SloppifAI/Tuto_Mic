@@ -51,7 +51,7 @@ Gib nur wieder, was im Transkript steht. Ergänze kein Fachwissen von außen. We
 
 ## Ausgabeformat
 
-Antworte nur mit der Zusammenfassung in genau dieser Gliederung. Lass einen Abschnitt weg, wenn es dazu im Transkript nichts gibt. Die gesamte Zusammenfassung darf höchstens 4500 Zeichen lang sein (etwa 600 Wörter), weil Tuto längere Texte nicht annimmt. Kürze im Zweifel bei Ablauf und Beispielen, nicht bei den Ergebnissen, Merksätzen und Fehlern.
+Antworte nur mit der Zusammenfassung in genau dieser Gliederung. Lass einen Abschnitt weg, wenn es dazu im Transkript nichts gibt.
 
 # [Fach], Klasse [Stufe, falls erkennbar]: [Thema der Stunde]
 

@@ -1,4 +1,8 @@
-//! Persistente Einstellungen und App-Verzeichnisse.
+//! Einstellungen und App-Verzeichnisse.
+//!
+//! Lehrkräfte sehen keine Einstellungen. Es gelten die Standardwerte; Betreuer ändern sie zentral über eine
+//! Datei (`config.json`, Pfad über `TUTO_MIC_CONFIG` wählbar) und/oder Umgebungsvariablen `TUTO_MIC_*`, die
+//! Vorrang vor der Datei haben (siehe [`ENV_VARS`]).
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -13,7 +17,23 @@ pub fn models_dir() -> PathBuf {
     dirs().data_dir().join("models")
 }
 
-/// Persistente Einstellungen (`<config_dir>/config.json`).
+/// Umgebungsvariablen und was sie setzen (für Doku und `tuto-mic info`).
+pub const ENV_VARS: &[(&str, &str)] = &[
+    ("TUTO_MIC_TUTO_URL", "Adresse der Tuto-Instanz"),
+    ("TUTO_MIC_SUMMARY_LIMIT", "Höchstlänge der Zusammenfassung in Zeichen"),
+    ("TUTO_MIC_OLLAMA_URL", "Adresse von Ollama"),
+    ("TUTO_MIC_OLLAMA_MODEL", "Sprachmodell für die Zusammenfassung"),
+    ("TUTO_MIC_LANGUAGE", "Sprache für Whisper, z. B. de"),
+    ("TUTO_MIC_WHISPER_MODEL", "Pfad zum Whisper-Modell"),
+    ("TUTO_MIC_VAD_MODEL", "Pfad zum VAD-Modell"),
+    (
+        "TUTO_MIC_DELETE_AUDIO",
+        "Audio nach der Transkription löschen (true/false)",
+    ),
+    ("TUTO_MIC_CLASS_LIST", "Klassenliste, Namen mit ; getrennt"),
+];
+
+/// Einstellungen, zusammengesetzt aus Standardwerten, Datei und Umgebungsvariablen.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -44,7 +64,7 @@ impl Default for Config {
             ollama_model: "qwen3.5:9b".into(),
             num_ctx: 32768,
             tuto_url: "https://hackathon.sebastian-bleuel.de".into(),
-            summary_limit: 5000,
+            summary_limit: 16383,
             segment_secs: 10,
             delete_audio_after_transcription: true,
             class_list: Vec::new(),
@@ -53,15 +73,44 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Konfigurationsdatei: `TUTO_MIC_CONFIG` oder `<config_dir>/config.json`.
     pub fn path() -> PathBuf {
-        dirs().config_dir().join("config.json")
+        std::env::var_os("TUTO_MIC_CONFIG").map_or_else(|| dirs().config_dir().join("config.json"), PathBuf::from)
     }
 
-    /// Lädt `config.json`. Fehlt die Datei, gelten die Standardwerte. Eine fehlerhafte Datei ist ein Fehler und
-    /// wird nicht still durch Standardwerte ersetzt – sonst ginge unbemerkt die Klassenliste und damit die
-    /// Pseudonymisierung verloren.
+    /// Standardwerte, darüber die Datei (falls vorhanden), darüber die Umgebungsvariablen. Eine fehlerhafte Datei
+    /// oder Variable ist ein Fehler und wird nicht still ersetzt – sonst ginge unbemerkt die Klassenliste und damit
+    /// die Pseudonymisierung verloren.
     pub fn load() -> Result<Self> {
-        Self::load_from(&Self::path())
+        let mut cfg = Self::load_from(&Self::path())?;
+        cfg.apply_env(|name| std::env::var(name).ok())?;
+        Ok(cfg)
+    }
+
+    /// Überschreibt Werte aus `TUTO_MIC_*`-Variablen (`get` liefert den Wert einer Variable).
+    fn apply_env(&mut self, get: impl Fn(&str) -> Option<String>) -> Result<()> {
+        fn parse<T: std::str::FromStr>(name: &str, value: &str) -> Result<T> {
+            value
+                .trim()
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{name}: ungültiger Wert „{value}“"))
+        }
+        for &(name, _) in ENV_VARS {
+            let Some(value) = get(name) else { continue };
+            match name {
+                "TUTO_MIC_TUTO_URL" => self.tuto_url = value,
+                "TUTO_MIC_SUMMARY_LIMIT" => self.summary_limit = parse(name, &value)?,
+                "TUTO_MIC_OLLAMA_URL" => self.ollama_url = value,
+                "TUTO_MIC_OLLAMA_MODEL" => self.ollama_model = value,
+                "TUTO_MIC_LANGUAGE" => self.language = value,
+                "TUTO_MIC_WHISPER_MODEL" => self.whisper_model = value.into(),
+                "TUTO_MIC_VAD_MODEL" => self.vad_model = value.into(),
+                "TUTO_MIC_DELETE_AUDIO" => self.delete_audio_after_transcription = parse(name, &value)?,
+                "TUTO_MIC_CLASS_LIST" => self.class_list = parse_class_list(&value.replace(';', "\n")),
+                _ => unreachable!("jede Variable aus ENV_VARS hat einen Zweig"),
+            }
+        }
+        Ok(())
     }
 
     fn load_from(path: &Path) -> Result<Self> {
@@ -70,13 +119,6 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).with_context(|| format!("Konfiguration nicht lesbar: {}", path.display())),
         }
-    }
-
-    pub fn save(&self) -> Result<()> {
-        let path = Self::path();
-        std::fs::create_dir_all(path.parent().expect("Konfigurationspfad liegt in einem Verzeichnis"))?;
-        std::fs::write(&path, serde_json::to_string_pretty(self)?)
-            .with_context(|| format!("Konfiguration nicht schreibbar: {}", path.display()))
     }
 }
 
@@ -105,6 +147,33 @@ mod tests {
 
         std::fs::write(&path, r#"{"segment_secs": "zehn"}"#).unwrap();
         assert!(Config::load_from(&path).is_err());
+    }
+
+    #[test]
+    fn env_overrides_file_values() {
+        let mut cfg = Config::default();
+        let env = |name: &str| match name {
+            "TUTO_MIC_TUTO_URL" => Some("https://tuto.schule.example".to_string()),
+            "TUTO_MIC_SUMMARY_LIMIT" => Some(" 9000 ".to_string()),
+            "TUTO_MIC_DELETE_AUDIO" => Some("false".to_string()),
+            "TUTO_MIC_CLASS_LIST" => Some("Lena Wagner; Tom Becker".to_string()),
+            _ => None,
+        };
+        cfg.apply_env(env).unwrap();
+        assert_eq!(cfg.tuto_url, "https://tuto.schule.example");
+        assert_eq!(cfg.summary_limit, 9000);
+        assert!(!cfg.delete_audio_after_transcription);
+        assert_eq!(cfg.class_list, ["Lena Wagner", "Tom Becker"]);
+        assert_eq!(cfg.ollama_model, Config::default().ollama_model);
+    }
+
+    #[test]
+    fn invalid_env_value_is_an_error() {
+        let mut cfg = Config::default();
+        let err = cfg
+            .apply_env(|name| (name == "TUTO_MIC_SUMMARY_LIMIT").then(|| "viel".to_string()))
+            .unwrap_err();
+        assert!(err.to_string().contains("TUTO_MIC_SUMMARY_LIMIT"), "{err}");
     }
 
     #[test]

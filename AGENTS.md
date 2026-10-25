@@ -14,15 +14,15 @@ cargo fmt                                    # Formatierung (rustfmt.toml)
 cargo deny check                             # Sicherheitslücken, Lizenzen (deny.toml)
 cargo machete                                # ungenutzte Abhängigkeiten
 cargo test ui_preview -- --ignored           # alle GUI-Zustände als PNG nach target/ui-preview/ (braucht GPU)
-cargo run -- --dev                           # GUI mit Dev-Modus
-nix develop .#cuda -c cargo gpu --dev       # mit NVIDIA-GPU (Alias in .cargo/config.toml)
+cargo app --dev                              # App (Release-Build, Whisper per Vulkan/Metal auf der GPU)
+cargo app info                               # zeigt, ob Whisper die GPU findet
 ```
 
 ## Wartezeiten vermeiden
 
 - Jede neue Kombination aus Profil und Features (Debug/Release × CUDA/Vulkan) übersetzt whisper.cpp neu
-  (~10 min). Nur zwei Kombinationen verwenden: Prüfungen (`cargo test`/`clippy`) in `nix develop`, die App mit
-  GPU über `cargo gpu` in `nix develop .#cuda`.
+  (~10 min). Nur zwei Kombinationen verwenden: Prüfungen (`cargo test`/`clippy`) und die App über `cargo app`
+  (Release), beide in `nix develop`. CUDA (`nix develop .#cuda`, `--features cuda`) nur bei Bedarf.
 - Praxistests mit kurzen Clips (20 s bis 3 min) oder Text-Transkripten; ganze Stunden erst zur Abschlussprüfung.
 - Zusätzliche Git-Worktrees (z. B. Subagenten) mit `CARGO_TARGET_DIR` auf das `target/` des Hauptverzeichnisses
   bauen, sonst übersetzt jeder whisper.cpp erneut.
