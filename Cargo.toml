@@ -1,6 +1,6 @@
 [package]
 name = "tuto-mic"
-version = "0.1.0"
+version = "0.2.0"
 description = "Unterricht aufnehmen, lokal transkribieren, pseudonymisieren und zusammenfassen"
 edition = "2024"
 # Anwendung, wird nicht auf crates.io veröffentlicht (Lizenz noch offen).
