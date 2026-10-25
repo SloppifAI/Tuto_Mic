@@ -53,7 +53,7 @@ pub fn listen(on_link: impl Fn(String) + Send + 'static) -> Result<()> {
 /// Hält fest, dass der Browser einen Rücksprung geliefert hat (ohne den Link selbst, er enthält den Code). Diese
 /// Instanz hat weder Terminal noch Fenster, die Datei ist der einzige Hinweis bei der Fehlersuche.
 pub fn log_attempt(forwarded: bool) {
-    let path = crate::config::dirs().data_dir().join("deeplink.log");
+    let path = crate::config::dirs().data_local_dir().join("deeplink.log");
     let line = format!(
         "{} Rücksprung empfangen, {}\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),

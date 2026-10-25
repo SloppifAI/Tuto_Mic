@@ -2,3 +2,9 @@
 .direnv/
 *.wav
 .claude/worktrees/
+# Aufnahmen und Transkripte echter Stunden gehören nie ins Repository
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.opus

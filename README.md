@@ -68,7 +68,7 @@ Zusammenfassung fehlt.
 | Maßnahme | Umsetzung |
 |---|---|
 | Verarbeitung auf dem Rechner | Spracherkennung (whisper.cpp) und Zusammenfassung (Ollama, Standard `http://localhost:11434`) laufen lokal. Internet braucht es nur für den einmaligen Modell-Download und für Tuto. |
-| Audio nur so lange wie nötig | Nach der Transkription wird der Audio-Ordner gelöscht (`pipeline.rs`). Bei abgebrochener Auswertung bleibt er erhalten, damit die Stunde nicht verloren ist. Keine Stimmprofile, keine Sprechererkennung. |
+| Audio nur so lange wie nötig | Nach der Transkription wird der Audio-Ordner gelöscht (`pipeline.rs`). Keine Stimmprofile, keine Sprechererkennung. |
 | Mitschrift während der Aufnahme | Der Text entsteht nur im Arbeitsspeicher (keine zusätzliche Datei, auch kein Audio: die Segmente gehen im Speicher an die Mitschrift) und wird nicht angezeigt, nur der Fortschritt. „Letzte Minuten verwerfen“ verwirft auch den mitgeschriebenen Text dieser Minuten (`live.rs`). |
 | Pseudonymisierung vor jedem KI-Schritt | Regeln in Code statt Anweisung an das Modell (`anonymize.rs`) – lokale Modelle gaben im Test Namen trotz Verbot im Prompt aus. |
 | – Klassenliste | Voller Name, Vor- und Nachname einzeln (auch mit Genitiv-s), jede Person ein festes Kürzel (`[Schüler A]`). Teilen sich zwei Personen einen Namensteil, wird er zu `[Schüler]` statt falsch zugeordnet. |
@@ -88,10 +88,11 @@ Zusammenfassung fehlt.
   Inhalte („der mit dem gebrochenen Arm“) können Personen erkennbar machen. Ein echter Schuleinsatz braucht
   eine Rechtsgrundlage bzw. Einwilligungen für die Aufnahme, eine Datenschutz-Folgenabschätzung und für Tuto
   einen Auftragsverarbeitungsvertrag.
-- **Ohne Klassenliste keine Schülernamen-Ersetzung.** Die Liste kommt aus der lokalen Konfiguration (`config.json`,
-  Umgebungsvariable oder Admin-Modus) und – sobald Tuto `GET /api/v1/roster` anbietet – zusätzlich aus Tuto
-  (Klassen der Lehrkraft inkl. Vertretung, nur im Arbeitsspeicher; die App ist dafür vorbereitet). Fehlt sie, warnt das Log. Namen, die nicht
-  auf der Liste stehen (z. B. Geschwister, andere Klassen), werden nicht erkannt.
+- **Ohne Klassenliste keine Schülernamen-Ersetzung.** Die Liste kommt aus Tuto (`GET /api/v1/roster`: Klassen der
+  Lehrkraft, nur im Arbeitsspeicher) und ergänzend aus der lokalen Konfiguration (Admin-Modus oder
+  Umgebungsvariable). Fehlt sie oder lädt Tuto sie nicht, zeigt die Ergebnisseite eine Warnung, die Zusammenfassung
+  vor dem Senden auf Namen zu prüfen. Namen, die nicht auf der Liste stehen (z. B. Geschwister, andere Klassen),
+  werden nicht erkannt.
 - **Klartext nur im Arbeitsspeicher.** Auf der Platte ist alles verschlüsselt, im Arbeitsspeicher (und ggf. in der
   Auslagerungsdatei) nicht. Festplattenverschlüsselung und ein Konto ohne Admin-Rechte bleiben deshalb empfohlen.
 - **Abbruch oder Absturz = Daten weg.** Ohne den Schlüssel lässt sich eine unterbrochene Aufnahme nicht mehr
@@ -121,13 +122,14 @@ steht in der Anleitung.
 
 ### Konfiguration
 
-Lehrkräfte sehen keine Einstellungen. Es gelten Standardwerte; die Betreuung ändert sie zentral, in dieser
-Reihenfolge (spätere gewinnen):
+Lehrkräfte sehen keine Einstellungen. Es gelten Standardwerte; die Betreuung ändert sie im Admin-Modus oder so,
+in dieser Reihenfolge (spätere gewinnen):
 
 1. eingebaute Standardwerte
-2. Datei `config.json` – Pfad mit `tuto-mic paths`, oder für alle Benutzer festgelegt über
-   `TUTO_MIC_CONFIG=/pfad/config.json`
-3. Umgebungsvariablen `TUTO_MIC_*`
+2. Konfigurationsdatei, verschlüsselt mit dem Passwort (`config.json.enc`, Ordner mit `tuto-mic paths`). Eine
+   vorbereitete Klartext-`config.json` an dieser Stelle wird beim Festlegen des Passworts übernommen,
+   verschlüsselt und gelöscht; der Ordner muss deshalb für das Konto schreibbar sein.
+3. Umgebungsvariablen `TUTO_MIC_*` (z. B. für feste Vorgaben auf allen Rechnern)
 
 Eine fehlerhafte Datei oder Variable wird nicht still ignoriert, sondern gemeldet (sonst ginge unbemerkt die
 Klassenliste verloren).
@@ -147,7 +149,7 @@ Klassenliste verloren).
 | `TUTO_MIC_CLASS_LIST` | `class_list` | Klassenliste; Variable: Namen mit `;` getrennt, Datei: Liste | leer |
 
 Nur in der Datei: `num_ctx` (Kontextlänge für Ollama, `32768`) und `segment_secs` (Länge der Audio-Stücke,
-`10`; bestimmt die Genauigkeit von „letzte Minuten verwerfen“). Beispiel:
+`10`; bestimmt die Genauigkeit von „letzte Minuten verwerfen“). Beispiel für eine vorbereitete `config.json`:
 
 ```json
 {
@@ -166,7 +168,7 @@ tuto-mic download        # Modelle vorab laden (~1,6 GB), z. B. bei der Einricht
 tuto-mic --admin         # GUI mit Admin-Menü (auch TUTO_MIC_ADMIN=1)
 ```
 
-Der **Admin-Modus** ergänzt die Oberfläche um Einstellungen (inkl. Klassenliste, schreibt `config.json`),
+Der **Admin-Modus** ergänzt die Oberfläche um Einstellungen (inkl. Klassenliste, schreibt `config.json.enc`),
 einen Prompt-Editor, die Ansicht „Transkript und Log“ (pseudonymisiert und Original) und den Import von Audio-
 oder Textdateien. Für den Unterricht die App ohne `--admin` starten.
 
@@ -175,10 +177,9 @@ Jede Auswertung schreibt nach `<Daten>/sessions/<Zeitstempel>/` eine `log.txt` m
 
 ### Empfehlungen für den Klassenraum-PC
 
-- Eigenes Benutzerkonto für den Unterricht, **ohne Administratorrechte**; Konfiguration per
-  `TUTO_MIC_CONFIG` an einem Ort, den dieses Konto nicht schreiben kann.
-- **Festplattenverschlüsselung** (BitLocker, FileVault, LUKS), solange die App lokale Daten nicht selbst
-  verschlüsselt.
+- Eigenes Benutzerkonto für den Unterricht, **ohne Administratorrechte**.
+- **Festplattenverschlüsselung** (BitLocker, FileVault, LUKS): Die App verschlüsselt ihre Dateien selbst, Klartext
+  im Arbeitsspeicher kann aber in der Auslagerungsdatei landen.
 - Ollama nur lokal lauschen lassen (Standard `127.0.0.1:11434`).
 - Eine GPU mit aktuellem Treiber; `tuto-mic info` zeigt, ob Whisper sie findet. Auf Laptops mit zwei GPUs
   nimmt Tuto Mic die dedizierte.
@@ -261,7 +262,8 @@ zu je 1–2 s Rechenzeit, nach dem Ende noch 0,7 s statt 4,5 s am Stück.
 - [`ci.yml`](.github/workflows/ci.yml): bei Push und Pull Request `fmt`, `clippy`, `test`, `deny`, `machete`
   (Linux).
 - [`release.yml`](.github/workflows/release.yml): Builds für Linux, Windows, macOS (arm64). Ein Tag `v*`
-  erzeugt ein GitHub-Release mit Paketen, `SHA256SUMS.txt` und Herkunftsnachweis; „Run workflow“ baut nur
+  erzeugt ein GitHub-Release mit Paketen, `SHA256SUMS.txt` und (nur bei öffentlichem Repository)
+  Herkunftsnachweis; „Run workflow“ baut nur
   Test-Artefakte.
 
 ```sh

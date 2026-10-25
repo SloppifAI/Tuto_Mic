@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// `audio/` (Segmente, nur bei Aufnahmen), `transcript.txt`, `transcript.anon.txt`, `summary.md`, `export.json`,
 /// `log.txt`. Aus der GUI alles verschlüsselt mit der zusätzlichen Endung `.enc` (siehe `crypt`).
 pub fn sessions_dir() -> PathBuf {
-    crate::config::dirs().data_dir().join("sessions")
+    crate::config::dirs().data_local_dir().join("sessions")
 }
 
 /// Verzeichnis für eine Aufnahme, mit `audio/` für die Segmente des Recorders.

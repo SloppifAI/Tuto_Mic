@@ -13,8 +13,9 @@ pub fn dirs() -> ProjectDirs {
     ProjectDirs::from("de", "Tuto", "tuto-mic").expect("kein Home-Verzeichnis gefunden")
 }
 
+/// Lokal, nicht im Roaming-Profil: Unter Windows würden sonst 1,6 GB bei jeder Anmeldung mit dem Server abgeglichen.
 pub fn models_dir() -> PathBuf {
-    dirs().data_dir().join("models")
+    dirs().data_local_dir().join("models")
 }
 
 /// Umgebungsvariablen und was sie setzen (für Doku und `tuto-mic info`).

@@ -40,7 +40,9 @@ Die Programme sind noch nicht signiert, das System warnt deshalb einmalig:
   `xattr -d com.apple.quarantine tuto-mic`.
 - **Linux:** `./tuto-mic` im entpackten Ordner. Nötig ist `libvulkan.so.1` (Paket `libvulkan1`).
 
-Beim ersten Zugriff auf das Mikrofon fragt das System nach der Erlaubnis – zustimmen.
+Mikrofon: macOS fragt beim ersten Zugriff nach der Erlaubnis – zustimmen. Windows fragt nicht; dort unter
+*Einstellungen → Datenschutz und Sicherheit → Mikrofon* „Desktop-Apps den Zugriff auf das Mikrofon erlauben“
+einschalten.
 
 ## 3. Einrichten (einmalig)
 
@@ -52,7 +54,10 @@ Beim ersten Zugriff auf das Mikrofon fragt das System nach der Erlaubnis – zus
    Rückfrage des Browsers („Tuto Mic öffnen?“) bestätigen. Oben rechts steht dann der eigene Name.
    - Unter **macOS** springt der Browser noch nicht automatisch zurück; die Adresse, die mit
      `tutoapp://callback` beginnt, unter „Kommt nichts zurück?“ einfügen.
-   - Die Namen der Klassen kommen ab dann aus Tuto (nur im Arbeitsspeicher, nicht gespeichert).
+   - Die Namen der Schüler:innen kommen ab dann aus Tuto (nur im Arbeitsspeicher, nicht gespeichert) und werden in
+     der Zusammenfassung durch Platzhalter ersetzt. Klappt das nicht, zeigt die Ergebnisseite eine Warnung.
+4. **Optional: lokale Klassenliste.** Im Admin-Modus unter Einstellungen → Klassenliste lassen sich zusätzlich
+   Namen eintragen, z. B. für Vertretungsklassen oder falls Tuto nicht erreichbar ist.
 
 ## 4. Benutzen
 
@@ -89,7 +94,9 @@ dann auf den Standardwerten. Ordner: Windows `%APPDATA%\Tuto\tuto-mic\config\`, 
 
 | Problem | Lösung |
 |---|---|
-| „Es konnte keine Zusammenfassung erstellt werden“ | Läuft Ollama? `ollama list` muss `qwen3.5:9b` zeigen. |
+| „Es konnte keine Zusammenfassung erstellt werden“ | Läuft Ollama? `ollama list` muss `qwen3.5:9b` zeigen. Ollama vor dem Beenden der Aufnahme starten – die Zusammenfassung lässt sich noch nicht nachträglich erstellen. |
+| „In der Aufnahme ist kaum Sprache zu hören“ | Mikrofon angeschlossen und freigegeben? Unter Windows siehe „Mikrofon“ oben. |
+| Windows: Fenster blitzt nur kurz auf | Im entpackten Ordner PowerShell öffnen (Umschalt + Rechtsklick → „PowerShell-Fenster hier öffnen“), `.\tuto-mic.exe` ausführen und die Meldung lesen. |
 | Transkription sehr langsam | `tuto-mic info` zeigt, ob eine GPU gefunden wurde. Grafiktreiber aktualisieren. |
 | Nach „Erlauben“ passiert nichts | Rückfrage des Browsers bestätigen; Tuto Mic darf nur einmal laufen. Notfalls Adresse einfügen (siehe oben). |
 | Windows: Programm startet nicht, Meldung zu `vulkan-1.dll` | Aktuellen Grafiktreiber des Herstellers installieren. |

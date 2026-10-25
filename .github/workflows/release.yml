@@ -69,6 +69,8 @@ jobs:
           mkdir -p dist/tuto-mic
           cp README.md dist/tuto-mic/
           cp -r docs dist/tuto-mic/
+          # Lexend ist ins Programm eingebettet; die OFL verlangt, die Lizenz mitzuliefern.
+          cp assets/fonts/OFL.txt dist/tuto-mic/OFL-Lexend.txt
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp "$CARGO_TARGET_DIR/release/tuto-mic.exe" dist/tuto-mic/
             (cd dist && 7z a ../tuto-mic-${{ matrix.name }}.zip tuto-mic)
