@@ -3,10 +3,11 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::json;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub struct Ollama {
     base: String,
+    agent: ureq::Agent,
 }
 
 pub struct Generation {
@@ -18,8 +19,15 @@ pub struct Generation {
 
 impl Ollama {
     pub fn new(base: &str) -> Self {
+        // Kurzer Verbindungs-Timeout: Eine falsche Adresse soll schnell auffallen. Die Generierung selbst darf
+        // bei langen Stunden Minuten dauern und bekommt daher kein Gesamtlimit.
+        let agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(3)))
+            .build()
+            .new_agent();
         Self {
             base: base.trim_end_matches('/').to_string(),
+            agent,
         }
     }
 
@@ -33,7 +41,12 @@ impl Ollama {
         struct Model {
             name: String,
         }
-        let tags: Tags = ureq::get(format!("{}/api/tags", self.base))
+        let tags: Tags = self
+            .agent
+            .get(format!("{}/api/tags", self.base))
+            .config()
+            .timeout_global(Some(Duration::from_secs(5)))
+            .build()
             .call()
             .with_context(|| format!("Ollama nicht erreichbar unter {} – läuft `ollama serve`?", self.base))?
             .body_mut()
@@ -58,7 +71,9 @@ impl Ollama {
             "think": false,
             "options": { "num_ctx": num_ctx, "temperature": 0.3 },
         });
-        let resp: Resp = ureq::post(format!("{}/api/generate", self.base))
+        let resp: Resp = self
+            .agent
+            .post(format!("{}/api/generate", self.base))
             .send_json(&body)
             .with_context(|| format!("Ollama-Anfrage an Modell {model} fehlgeschlagen"))?
             .body_mut()

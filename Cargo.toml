@@ -36,7 +36,7 @@ metal = ["whisper-rs/metal"]
 opt-level = 2
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.27.0"
 
 [lints.rust]
 unsafe_code = "forbid"

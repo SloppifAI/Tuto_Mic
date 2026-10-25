@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Standardmäßig nur lesen; der Release-Job erweitert das für sich.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 

@@ -1,7 +1,9 @@
+//! Persistente Einstellungen und App-Verzeichnisse.
+
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn dirs() -> ProjectDirs {
     ProjectDirs::from("de", "Tuto", "tuto-mic").expect("kein Home-Verzeichnis gefunden")
@@ -49,11 +51,19 @@ impl Config {
         dirs().config_dir().join("config.json")
     }
 
-    pub fn load() -> Self {
-        std::fs::read_to_string(Self::path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+    /// Lädt `config.json`. Fehlt die Datei, gelten die Standardwerte. Eine fehlerhafte Datei ist ein Fehler und
+    /// wird nicht still durch Standardwerte ersetzt – sonst ginge unbemerkt die Klassenliste und damit die
+    /// Pseudonymisierung verloren.
+    pub fn load() -> Result<Self> {
+        Self::load_from(&Self::path())
+    }
+
+    fn load_from(path: &Path) -> Result<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(s) => serde_json::from_str(&s).with_context(|| format!("Konfiguration fehlerhaft: {}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e).with_context(|| format!("Konfiguration nicht lesbar: {}", path.display())),
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -64,9 +74,40 @@ impl Config {
     }
 }
 
+/// Eine Person pro Zeile; Leerzeilen und Ränder werden entfernt.
+pub fn parse_class_list(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_distinguishes_missing_and_broken_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        assert_eq!(Config::load_from(&path).unwrap().language, "de");
+
+        std::fs::write(&path, r#"{"class_list": ["Lena Wagner""#).unwrap();
+        let err = Config::load_from(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("Konfiguration fehlerhaft"), "{err:#}");
+
+        std::fs::write(&path, r#"{"segment_secs": "zehn"}"#).unwrap();
+        assert!(Config::load_from(&path).is_err());
+    }
+
+    #[test]
+    fn parses_class_list() {
+        assert_eq!(
+            parse_class_list(" Lena Wagner \n\n Tom Becker\n"),
+            ["Lena Wagner", "Tom Becker"]
+        );
+    }
 
     #[test]
     fn missing_fields_fall_back_to_defaults() {

@@ -2,7 +2,7 @@
 //! überschreiben: im Dev-Modus über den Editor, oder per Datei `summary.md` in `<config_dir>/prompts/`
 //! bzw. `$TUTO_MIC_PROMPTS`.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 pub const BUILTIN: &str = include_str!("../prompts/summary.md");
@@ -38,15 +38,17 @@ pub fn render(prompt: &str, transcript: &str) -> String {
 }
 
 pub fn save(text: &str) -> Result<()> {
-    std::fs::create_dir_all(override_dir())?;
-    std::fs::write(override_path(), text)?;
+    let path = override_path();
+    std::fs::create_dir_all(override_dir())
+        .and_then(|()| std::fs::write(&path, text))
+        .with_context(|| format!("Prompt nicht speicherbar: {}", path.display()))?;
     Ok(())
 }
 
 pub fn reset() -> Result<()> {
     let path = override_path();
     if path.exists() {
-        std::fs::remove_file(path)?;
+        std::fs::remove_file(&path).with_context(|| format!("Prompt nicht löschbar: {}", path.display()))?;
     }
     Ok(())
 }

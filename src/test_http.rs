@@ -11,9 +11,10 @@ pub struct Request {
 }
 
 /// Startet den Server und liefert seine Basis-URL (`http://127.0.0.1:<port>`).
-pub fn serve_once(status: u16, body: &'static str) -> (String, JoinHandle<Request>) {
+pub fn serve_once(status: u16, body: impl Into<String>) -> (String, JoinHandle<Request>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
+    let body = body.into();
     let handle = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut reader = BufReader::new(stream);

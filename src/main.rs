@@ -53,9 +53,10 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Cmd::Process { audio, no_llm }) => {
             let opts = pipeline::Options {
-                cfg: config::Config::load(),
+                cfg: config::Config::load()?,
                 summary_prompt: prompts::load(),
                 skip_llm: no_llm,
+                keep_original_transcript: true,
             };
             let (tx, rx) = std::sync::mpsc::channel();
             let printer = std::thread::spawn(move || {
@@ -88,7 +89,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Cmd::Download) => {
-            let cfg = config::Config::load();
+            let cfg = config::Config::load()?;
             for (spec, dest) in [(models::WHISPER, &cfg.whisper_model), (models::VAD, &cfg.vad_model)] {
                 if dest.is_file() {
                     eprintln!("{} vorhanden: {}", spec.label, dest.display());

@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::control::{Command, RecState};
 use crate::icons::{self, Icon};
 use crate::pipeline::{self, Outcome, Progress, Source};
@@ -58,11 +58,19 @@ pub struct TutoMicApp {
     ollama_models: Result<Vec<String>, String>,
     class_list_buf: String,
     prompt_buf: String,
+    /// Zuletzt angezeigter Aufnahmefehler, damit „Schließen“ ihn nicht im nächsten Frame wieder öffnet.
+    rec_error_seen: Option<String>,
 }
 
 impl TutoMicApp {
     pub fn new(dev: bool) -> Self {
-        let cfg = Config::load();
+        let (cfg, error) = match Config::load() {
+            Ok(cfg) => (cfg, None),
+            Err(e) => (
+                Config::default(),
+                Some(format!("{e:#} – es gelten die Standardwerte, ohne Klassenliste")),
+            ),
+        };
         let ollama_models = llm::Ollama::new(&cfg.ollama_url).models().map_err(|e| format!("{e:#}"));
         Self {
             class_list_buf: cfg.class_list.join("\n"),
@@ -73,12 +81,13 @@ impl TutoMicApp {
             processing: None,
             outcome: None,
             result_view: ResultView::Summary,
-            error: None,
+            error,
             delete_minutes: 5,
             confirm_delete: false,
             download: None,
             ollama_models,
             prompt_buf: prompts::load(),
+            rec_error_seen: None,
         }
     }
 
@@ -122,8 +131,15 @@ impl TutoMicApp {
 
     fn start_recording(&mut self) -> anyhow::Result<()> {
         let dir = session::create(None)?;
-        let rec = Recorder::start(&session::audio_dir(&dir), self.cfg.segment_secs)?;
+        let rec = match Recorder::start(&session::audio_dir(&dir), self.cfg.segment_secs) {
+            Ok(rec) => rec,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+        };
         self.error = None;
+        self.rec_error_seen = None;
         self.recorder = Some((rec, dir));
         Ok(())
     }
@@ -143,6 +159,7 @@ impl TutoMicApp {
             cfg: self.cfg.clone(),
             summary_prompt: prompts::load(),
             skip_llm: false,
+            keep_original_transcript: self.dev,
         };
         let ctx = ctx.clone();
         pipeline::spawn(source, opts, tx, Arc::new(move || ctx.request_repaint()), abort.clone());
@@ -493,24 +510,22 @@ impl TutoMicApp {
             )
             .strong(),
         );
-        ui.add(
-            egui::TextEdit::multiline(&mut self.class_list_buf)
-                .desired_rows(8)
-                .desired_width(f32::INFINITY),
-        );
+        if ui
+            .add(
+                egui::TextEdit::multiline(&mut self.class_list_buf)
+                    .desired_rows(8)
+                    .desired_width(f32::INFINITY),
+            )
+            .changed()
+        {
+            self.cfg.class_list = config::parse_class_list(&self.class_list_buf);
+        }
 
         ui.add_space(8.0);
-        if ui.button("Speichern").clicked() {
-            self.cfg.class_list = self
-                .class_list_buf
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(String::from)
-                .collect();
-            if let Err(e) = self.cfg.save() {
-                self.error = Some(format!("{e:#}"));
-            }
+        if ui.button("Speichern").clicked()
+            && let Err(e) = self.cfg.save()
+        {
+            self.error = Some(format!("{e:#}"));
         }
         ui.label(RichText::new(Config::path().display().to_string()).small().weak());
     }
@@ -537,14 +552,19 @@ impl TutoMicApp {
                 .add_enabled(overridden, egui::Button::new("Auf eingebaute Version zurücksetzen"))
                 .clicked()
             {
-                let _ = prompts::reset();
+                if let Err(e) = prompts::reset() {
+                    self.error = Some(format!("{e:#}"));
+                }
                 self.prompt_buf = prompts::load();
             }
         });
         ui.label(
-            RichText::new("Das Transkript wird direkt an den Prompt angehängt.")
-                .small()
-                .weak(),
+            RichText::new(format!(
+                "Das Transkript ersetzt {} (fehlt der Platzhalter, wird es angehängt).",
+                prompts::TRANSCRIPT_PLACEHOLDER
+            ))
+            .small()
+            .weak(),
         );
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add(
@@ -561,8 +581,11 @@ impl eframe::App for TutoMicApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
         if let Some((rec, _)) = &self.recorder {
-            if let Some(e) = rec.error() {
+            if let Some(e) = rec.error()
+                && self.rec_error_seen.as_ref() != Some(&e)
+            {
                 self.error = Some(format!("Aufnahmefehler: {e}"));
+                self.rec_error_seen = Some(e);
             }
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }

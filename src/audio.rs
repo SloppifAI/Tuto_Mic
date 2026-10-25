@@ -86,7 +86,8 @@ pub fn load_segments(audio_dir: &Path) -> Result<Vec<f32>> {
     files.sort();
     let mut samples = Vec::new();
     for f in files {
-        let mut reader = hound::WavReader::open(&f)?;
+        let mut reader =
+            hound::WavReader::open(&f).with_context(|| format!("Aufnahme-Segment nicht lesbar: {}", f.display()))?;
         samples.extend(
             reader
                 .samples::<i16>()
@@ -112,8 +113,9 @@ pub fn load_file(path: &Path) -> Result<Vec<f32>> {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         hint.with_extension(ext);
     }
-    let mut format =
-        symphonia::default::get_probe().probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())?;
+    let mut format = symphonia::default::get_probe()
+        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+        .with_context(|| format!("Audioformat nicht erkannt: {}", path.display()))?;
     let track = format
         .default_track(TrackType::Audio)
         .context("keine Audiospur gefunden")?;

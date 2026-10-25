@@ -1,4 +1,6 @@
-use anyhow::Result;
+//! Ein Verzeichnis pro Aufnahme bzw. Import.
+
+use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use std::path::{Path, PathBuf};
 
@@ -10,7 +12,8 @@ pub fn sessions_dir() -> PathBuf {
 
 pub fn create(label: Option<&str>) -> Result<PathBuf> {
     let dir = sessions_dir().join(dir_name(Local::now(), label));
-    std::fs::create_dir_all(audio_dir(&dir))?;
+    std::fs::create_dir_all(audio_dir(&dir))
+        .with_context(|| format!("Aufnahme-Verzeichnis nicht anlegbar: {}", dir.display()))?;
     Ok(dir)
 }
 

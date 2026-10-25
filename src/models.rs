@@ -1,3 +1,5 @@
+//! Download der Whisper- und VAD-Modelle.
+
 use anyhow::{Context, Result, bail};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -34,7 +36,8 @@ pub fn download(url: &str, dest: &Path, mut progress: impl FnMut(u64, Option<u64
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse().ok());
     let part = dest.with_extension("part");
-    let mut file = std::fs::File::create(&part)?;
+    let mut file =
+        std::fs::File::create(&part).with_context(|| format!("Datei nicht schreibbar: {}", part.display()))?;
     let mut reader = resp.body_mut().with_config().limit(u64::MAX).reader();
     let mut buf = vec![0u8; 1 << 16];
     let mut done = 0u64;
@@ -50,7 +53,7 @@ pub fn download(url: &str, dest: &Path, mut progress: impl FnMut(u64, Option<u64
     if let Some(total) = total.filter(|&t| t != done) {
         bail!("Download unvollständig: {done} von {total} Bytes");
     }
-    std::fs::rename(part, dest)?;
+    std::fs::rename(&part, dest).with_context(|| format!("Datei nicht verschiebbar: {}", dest.display()))?;
     Ok(())
 }
 

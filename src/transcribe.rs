@@ -1,3 +1,5 @@
+//! Transkription mit whisper.cpp (über whisper-rs) und Aufbereitung als Text mit Zeitstempeln.
+
 use crate::config::Config;
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -25,7 +27,7 @@ pub fn transcribe(
     let model = &cfg.whisper_model;
     let ctx = WhisperContext::new_with_params(model, WhisperContextParameters::default())
         .with_context(|| format!("Whisper-Modell nicht ladbar: {}", model.display()))?;
-    let mut state = ctx.create_state()?;
+    let mut state = ctx.create_state().context("Whisper konnte nicht gestartet werden")?;
 
     let mut params = FullParams::new(SamplingStrategy::BeamSearch {
         beam_size: 5,
@@ -48,7 +50,9 @@ pub fn transcribe(
     params.set_progress_callback_safe(progress);
     params.set_abort_callback_safe(move || abort.load(Ordering::Relaxed));
 
-    state.full(params, samples)?;
+    state
+        .full(params, samples)
+        .context("Transkription fehlgeschlagen oder abgebrochen")?;
 
     let mut out = Vec::new();
     for seg in state.as_iter() {
