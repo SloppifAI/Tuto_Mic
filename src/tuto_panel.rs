@@ -578,44 +578,45 @@ impl TutoPanel {
             .find(|(p, _)| *p == self.plan)
             .map_or("Später wählen".to_string(), |(_, label)| label.clone());
 
-        ui.horizontal(|ui| {
-            let label = ui.label("Für welche Stunde?");
-            egui::ComboBox::from_id_salt("plan")
-                .selected_text(current)
-                .width(320.0)
-                .show_ui(ui, |ui| {
-                    for (plan, text) in options {
-                        if ui.selectable_label(self.plan == plan, text).clicked() {
-                            if plan == Plan::New && !self.form.open {
-                                self.form = NewLessonForm {
-                                    open: true,
-                                    class_id: self.classes.first().map(|c| c.id),
-                                    ..NewLessonForm::default()
-                                };
-                            } else if plan != Plan::New {
-                                self.form = NewLessonForm::default();
+        // Ein Raster für Stundenwahl und „Neue Stunde“, damit die Auswahlfelder untereinander bündig stehen.
+        egui::Grid::new("plan")
+            .num_columns(2)
+            .spacing([12.0, 8.0])
+            .show(ui, |ui| {
+                let label = ui.label("Für welche Stunde?");
+                egui::ComboBox::from_id_salt("plan")
+                    .selected_text(current)
+                    .width(320.0)
+                    .show_ui(ui, |ui| {
+                        for (plan, text) in options {
+                            if ui.selectable_label(self.plan == plan, text).clicked() {
+                                if plan == Plan::New && !self.form.open {
+                                    self.form = NewLessonForm {
+                                        open: true,
+                                        class_id: self.classes.first().map(|c| c.id),
+                                        ..NewLessonForm::default()
+                                    };
+                                } else if plan != Plan::New {
+                                    self.form = NewLessonForm::default();
+                                }
+                                self.plan = plan;
+                                self.plan_applied = false;
                             }
-                            self.plan = plan;
-                            self.plan_applied = false;
                         }
-                    }
-                })
-                .response
-                .labelled_by(label.id);
-        });
-        if self.plan == Plan::New {
-            ui.add_space(4.0);
-            egui::Grid::new("plan_new_lesson")
-                .num_columns(2)
-                .spacing([12.0, 8.0])
-                .show(ui, |ui| {
+                    })
+                    .response
+                    .labelled_by(label.id);
+                ui.end_row();
+                if self.plan == Plan::New {
                     let l = ui.label("Klasse");
                     self.class_picker(ui, l.id);
                     ui.end_row();
                     let l = ui.label("Fach");
                     self.subject_picker(ui, l.id);
                     ui.end_row();
-                });
+                }
+            });
+        if self.plan == Plan::New {
             ui.label(
                 RichText::new("Die Stunde wird beim Senden in Tuto angelegt, das Thema kommt aus der Zusammenfassung.")
                     .small()
