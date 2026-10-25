@@ -8,22 +8,28 @@ publish = false
 
 [dependencies]
 anyhow = "1.0.104"
-chrono = "0.4.45"
+base64 = "0.23.1"
+chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive"] }
 cpal = "0.18.2"
 directories = "6.0.0"
 eframe = "0.37"
 env_logger = "0.11.11"
+getrandom = "0.4.3"
 hound = "3.5.1"
+keyring = "4.2.0"
 log = "0.4.34"
 regex = "1.13.1"
 rfd = "0.17.2"
 rubato = "5.0.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.11.1"
 strsim = "0.11.1"
 symphonia = { version = "0.6.1", features = ["all"] }
 ureq = { version = "3.5.0", features = ["json"] }
+url = "2.5.8"
+webbrowser = "1.2.5"
 whisper-rs = { version = "0.16.0", features = ["log_backend"] }
 
 [features]

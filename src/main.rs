@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use tuto_mic::{app, config, models, pipeline, prompts, session};
+use tuto_mic::{app, config, deeplink, models, pipeline, prompts, session, tuto};
 
 /// Tuto Mic – Unterricht aufnehmen, lokal transkribieren, pseudonymisieren und zusammenfassen.
 #[derive(Parser)]
@@ -30,11 +30,23 @@ enum Cmd {
     Download,
     /// Pfade von Konfiguration, Prompts und Sessions anzeigen.
     Paths,
+    /// Verbindung zu Tuto und Upload von Zusammenfassungen.
+    Tuto {
+        #[command(subcommand)]
+        cmd: tuto::cli::TutoCmd,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,zbus=warn,tracing=warn")).init();
     whisper_rs::install_logging_hooks();
+    // Vom Browser gestartet mit dem Rücksprung von Tuto: an die laufende App weitergeben.
+    if let Some(link) = std::env::args().nth(1).filter(|a| deeplink::is_link(a)) {
+        if deeplink::forward(&link) {
+            return Ok(());
+        }
+        anyhow::bail!("Tuto Mic läuft nicht – bitte die App öffnen und noch einmal verbinden.");
+    }
     let cli = Cli::parse();
     let dev = cli.dev || std::env::var("TUTO_MIC_DEV").is_ok_and(|v| v == "1");
 
@@ -102,6 +114,7 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Some(Cmd::Tuto { cmd }) => tuto::cli::run(cmd, &config::Config::load()?),
         Some(Cmd::Paths) => {
             println!("Konfiguration: {}", config::Config::path().display());
             println!("Prompts:       {}", prompts::override_dir().display());

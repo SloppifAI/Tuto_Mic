@@ -8,6 +8,7 @@ pub mod app;
 pub mod audio;
 pub mod config;
 pub mod control;
+pub mod deeplink;
 pub mod icons;
 pub mod llm;
 pub mod models;
@@ -16,6 +17,7 @@ pub mod prompts;
 pub mod recorder;
 pub mod session;
 pub mod transcribe;
+pub mod tuto;
 
 #[cfg(test)]
 mod test_http;

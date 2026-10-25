@@ -23,6 +23,8 @@ pub struct Config {
     pub ollama_url: String,
     pub ollama_model: String,
     pub num_ctx: u32,
+    /// Adresse der Tuto-Instanz, an die Zusammenfassungen gesendet werden.
+    pub tuto_url: String,
     /// Länge der Aufnahme-Segmente. Bestimmt die Genauigkeit von "letzte X min löschen".
     pub segment_secs: u32,
     pub delete_audio_after_transcription: bool,
@@ -39,6 +41,7 @@ impl Default for Config {
             ollama_url: "http://localhost:11434".into(),
             ollama_model: "qwen3.5:9b".into(),
             num_ctx: 32768,
+            tuto_url: "https://hackathon.sebastian-bleuel.de".into(),
             segment_secs: 10,
             delete_audio_after_transcription: true,
             class_list: Vec::new(),
