@@ -25,7 +25,13 @@ cargo app info                               # zeigt, ob Whisper die GPU findet
   (Release), beide in `nix develop`. CUDA (`nix develop .#cuda`, `--features cuda`) nur bei Bedarf.
 - Praxistests mit kurzen Clips (20 s bis 3 min) oder Text-Transkripten; ganze Stunden erst zur Abschlussprüfung.
 - Zusätzliche Git-Worktrees (z. B. Subagenten) mit `CARGO_TARGET_DIR` auf das `target/` des Hauptverzeichnisses
-  bauen, sonst übersetzt jeder whisper.cpp erneut.
+  bauen, sonst übersetzt jeder whisper.cpp erneut. Alle Worktrees erzeugen dort dieselben Dateinamen; hat ein
+  anderer Worktree zuletzt gebaut, hält cargo den Stand womöglich für aktuell und startet dessen Tests. Vorher
+  `touch src/*.rs src/app/*.rs` und an der Testzahl bzw. `cargo test -- --list` prüfen, dass die eigenen Tests
+  laufen.
+- Mitschrift während der Aufnahme ohne GUI prüfen: `cargo run -- simulate-live <clip> --speed 4 [--delete 100:45]
+  [--compare]` (Debug-Build, dieselbe Kombination wie die Tests; spielt den Clip in Segmenten wie der Recorder
+  ein und misst die Wartezeit nach dem Ende).
 
 Vor dem Abschluss einer Aufgabe müssen `fmt`, `clippy` und `test` ohne Befund durchlaufen; die CI prüft
 dasselbe plus `deny` und `machete`.

@@ -12,6 +12,7 @@ pub mod crypt;
 pub mod deeplink;
 pub mod gpu;
 pub mod icons;
+pub mod live;
 pub mod llm;
 pub mod models;
 pub mod pipeline;

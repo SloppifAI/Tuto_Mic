@@ -1,10 +1,12 @@
 //! Verarbeitung nach der Aufnahme: Audio → Transkript → Pseudonymisierung → Zusammenfassung
 //! → Export-Paket. Läuft in einem Hintergrund-Thread. Ein importiertes Text-Transkript überspringt die ersten
-//! beiden Schritte.
+//! beiden Schritte; eine während der Aufnahme mitgeschriebene Stunde ([`Source::Live`]) wartet nur auf den Rest
+//! der Mitschrift.
 
 use crate::anonymize::Pseudonymizer;
 use crate::config::Config;
 use crate::crypt::{self, Key};
+use crate::live::{self, LiveTranscriber};
 use crate::llm::Ollama;
 use crate::{audio, gpu, prompts, session, transcribe};
 use anyhow::{Context, Result};
@@ -41,10 +43,13 @@ pub const TRANSCRIPT_EXTENSIONS: &[&str] = &["txt", "md"];
 /// Beides zusammen, für einen gemeinsamen Filter im Dateidialog.
 pub const IMPORT_EXTENSIONS: [&str; 8] = ["mp3", "wav", "flac", "ogg", "m4a", "opus", "txt", "md"];
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Source {
     /// Aufnahme-Session mit Segmenten in `audio/`.
     Session(PathBuf),
+    /// Aufnahme-Session, die schon während der Aufnahme mitgeschrieben wurde (siehe `live`). Ist die Mitschrift
+    /// unbrauchbar, wird wie bei [`Source::Session`] alles aus den Segmenten transkribiert.
+    Live(PathBuf, LiveTranscriber),
     /// Importierte Audiodatei (Admin-Modus / CLI).
     File(PathBuf),
     /// Importiertes Text-Transkript (UTF-8), z. B. Demo-Daten oder zum Prompt-Testen: kein Audio, kein Whisper.
@@ -157,17 +162,31 @@ fn run_in(
             ));
             (session::create_in(sessions, import_label(path))?, transcript, None)
         }
-        Source::Session(dir) => {
+        Source::Session(dir) | Source::Live(dir, _) => {
             let key = opts
                 .encryption
                 .as_ref()
                 .context("Die Aufnahme ist verschlüsselt, der Schlüssel der Sitzung fehlt")?;
-            let samples = load_audio(&step, &mut log, || audio::load_segments(&session::audio_dir(dir), key))?;
-            check_abort(abort)?;
+            let audio_dir = session::audio_dir(dir);
+            let live = match source {
+                Source::Live(_, live) => {
+                    let progress = |p| {
+                        let _ = tx.send(Progress::Whisper(p));
+                        notify();
+                    };
+                    finish_live(live, &audio_dir, key, abort, &progress, &step, &mut log)?
+                }
+                _ => None,
+            };
             // Bei Abbruch bleibt das (verschlüsselte) Audio der Aufnahme erhalten.
-            let (transcript, secs) = transcribe_samples(samples, &opts.cfg, tx, notify, abort, &step, &mut log)?;
+            let (transcript, secs) = if let Some(done) = live {
+                done
+            } else {
+                let samples = load_audio(&step, &mut log, || audio::load_segments(&audio_dir, key))?;
+                check_abort(abort)?;
+                transcribe_samples(samples, &opts.cfg, tx, notify, abort, &step, &mut log)?
+            };
             if opts.cfg.delete_audio_after_transcription {
-                let audio_dir = session::audio_dir(dir);
                 std::fs::remove_dir_all(&audio_dir)
                     .with_context(|| format!("Audio nicht löschbar: {}", audio_dir.display()))?;
                 log.push("Audio nach Transkription gelöscht".into());
@@ -194,7 +213,7 @@ fn run_in(
         }
         Err(e) => {
             // Abgebrochene Importe hinterlassen nichts; eine Aufnahme behält ihr Verzeichnis.
-            if e.is::<Cancelled>() && !matches!(source, Source::Session(_)) {
+            if e.is::<Cancelled>() && !matches!(source, Source::Session(_) | Source::Live(..)) {
                 let _ = std::fs::remove_dir_all(&dir);
             }
             Err(e)
@@ -208,21 +227,23 @@ fn with_tuto_roster(opts: &Options, step: &dyn Fn(String), log: &mut Vec<String>
     let mut opts = opts.clone();
     let Some(session) = opts.tuto.clone() else { return opts };
     step("Klassenliste aus Tuto laden …".into());
+    log.push(add_tuto_roster(&mut opts.cfg, session));
+    opts
+}
+
+/// Ergänzt `cfg.class_list` um die Namen aus Tuto. Liefert eine Zeile fürs Log (ohne Namen).
+pub(crate) fn add_tuto_roster(cfg: &mut Config, session: crate::tuto::Session) -> String {
     match crate::tuto::Client::new(session).roster() {
         Ok(Some(names)) => {
-            log.push(format!("Klassenliste aus Tuto: {} Namen", names.len()));
-            let mut seen: std::collections::HashSet<String> =
-                opts.cfg.class_list.iter().map(|n| n.to_lowercase()).collect();
-            opts.cfg
-                .class_list
+            let line = format!("Klassenliste aus Tuto: {} Namen", names.len());
+            let mut seen: std::collections::HashSet<String> = cfg.class_list.iter().map(|n| n.to_lowercase()).collect();
+            cfg.class_list
                 .extend(names.into_iter().filter(|n| seen.insert(n.to_lowercase())));
+            line
         }
-        Ok(None) => log.push("Klassenliste aus Tuto nicht verfügbar – nur die lokale Liste".into()),
-        Err(e) => log.push(format!(
-            "Warnung: Klassenliste aus Tuto nicht ladbar ({e:#}) – nur die lokale Liste"
-        )),
+        Ok(None) => "Klassenliste aus Tuto nicht verfügbar – nur die lokale Liste".into(),
+        Err(e) => format!("Warnung: Klassenliste aus Tuto nicht ladbar ({e:#}) – nur die lokale Liste"),
     }
-    opts
 }
 
 fn import_label(path: &Path) -> Option<&str> {
@@ -302,6 +323,85 @@ fn transcribe_samples(
         t.elapsed().as_secs_f64()
     ));
     Ok((transcribe::to_text(&segments), secs))
+}
+
+/// Wartet, bis die Mitschrift während der Aufnahme den Rest transkribiert hat, und prüft sie gegen die
+/// gespeicherten Segmente. Liefert Transkript und Audiolänge in Sekunden, oder `None`, wenn stattdessen wie
+/// bisher alles transkribiert werden soll (Grund steht dann im Log). Fehler nur bei Abbruch.
+fn finish_live(
+    live: &LiveTranscriber,
+    audio_dir: &Path,
+    key: &Key,
+    abort: &AtomicBool,
+    progress: &dyn Fn(i32),
+    step: &dyn Fn(String),
+    log: &mut Vec<String>,
+) -> Result<Option<(String, f64)>> {
+    let (done, received) = live.backlog();
+    if live::too_far_behind(done, received) {
+        log.push(format!(
+            "Mitschrift beim Beenden erst bei {:.0} von {:.0} s – vollständige Transkription",
+            frames_secs(done),
+            frames_secs(received)
+        ));
+        live.abort();
+        // Erst warten, bis die Mitschrift die GPU freigibt.
+        let _ = live.join();
+        return Ok(None);
+    }
+    step("Transkription abschließen …".into());
+    let t = Instant::now();
+    while !live.is_finished() {
+        if abort.load(Ordering::Relaxed) {
+            live.abort();
+            let _ = live.join();
+            return Err(Cancelled.into());
+        }
+        let (done, received) = live.backlog();
+        if let Some(pct) = (done * 100).checked_div(received) {
+            progress(pct as i32);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let result = live.join();
+    let recorded = match audio::segment_frames(audio_dir, key) {
+        Ok(frames) => Some(frames),
+        Err(e) => {
+            // Ohne lesbare Segmente ginge auch die vollständige Transkription nicht; die Mitschrift ist dann
+            // die einzige Quelle.
+            log.push(format!(
+                "Warnung: Aufnahme-Segmente nicht lesbar ({e:#}), nur die Mitschrift"
+            ));
+            None
+        }
+    };
+    match live::decide(result, recorded) {
+        Ok(transcript) => {
+            let secs = frames_secs(transcript.frames);
+            log.push(format!("Audio: {secs:.0} s"));
+            log.push(format!(
+                "Whisper: {}",
+                gpu::describe(gpu::compiled_backend(), gpu::detected().as_ref())
+            ));
+            log.push(format!(
+                "Transkription während der Aufnahme: {} Abschnitte, {} Segmente, Rest nach dem Beenden in {:.1} s",
+                transcript.chunks,
+                transcript.segments.len(),
+                t.elapsed().as_secs_f64()
+            ));
+            Ok(Some((transcribe::to_text(&transcript.segments), secs)))
+        }
+        Err(reason) => {
+            log.push(format!(
+                "Warnung: Mitschrift während der Aufnahme nicht verwendbar ({reason}) – vollständige Transkription"
+            ));
+            Ok(None)
+        }
+    }
+}
+
+fn frames_secs(frames: u64) -> f64 {
+    frames as f64 / f64::from(audio::WHISPER_RATE)
 }
 
 /// Alles nach der Transkription: Pseudonymisieren, Zusammenfassen, Dateien schreiben. Braucht kein Whisper
@@ -775,14 +875,141 @@ mod tests {
         assert!(format!("{err:#}").contains("Schlüssel der Sitzung fehlt"), "{err:#}");
     }
 
+    /// Aufnahme-Sitzung mit einem verschlüsselten Segment aus `frames` Frames.
+    fn recorded_session(sessions: &Path, key: &Key, frames: usize) -> PathBuf {
+        let dir = session::create_in(sessions, None).unwrap();
+        let audio = session::audio_dir(&dir);
+        std::fs::create_dir_all(&audio).unwrap();
+        let mut wav = std::io::Cursor::new(Vec::new());
+        let mut w = hound::WavWriter::new(&mut wav, crate::recorder::SEGMENT_SPEC).unwrap();
+        for _ in 0..frames {
+            w.write_sample(0i16).unwrap();
+        }
+        w.finalize().unwrap();
+        crypt::write(&audio.join("seg_00001.wav.enc"), key, wav.get_ref()).unwrap();
+        dir
+    }
+
+    fn live_transcript(frames: u64) -> live::LiveTranscript {
+        live::LiveTranscript {
+            segments: vec![transcribe::Segment {
+                start_ms: 1_000,
+                text: "Lena Wagner, bitte an die Tafel.".into(),
+            }],
+            frames,
+            chunks: 1,
+        }
+    }
+
+    /// Optionen für Aufnahmen: verschlüsselt, ohne Ollama und mit einem Whisper-Modell, das es nicht gibt – jeder
+    /// Versuch, doch zu transkribieren, fällt so auf.
+    fn recording_options(key: &Key) -> Options {
+        let mut opts = Options {
+            skip_llm: true,
+            encryption: Some(key.clone()),
+            ..options(NO_OLLAMA)
+        };
+        opts.cfg.whisper_model = PathBuf::from("/nicht/vorhanden/ggml.bin");
+        opts
+    }
+
+    #[test]
+    fn live_transcript_replaces_whisper() {
+        let sessions = tempfile::tempdir().unwrap();
+        let key = Key::generate().unwrap();
+        let dir = recorded_session(sessions.path(), &key, 16_000);
+        let live = LiveTranscriber::finished(Ok(live_transcript(16_000)));
+        let outcome = run_source(
+            sessions.path(),
+            &Source::Live(dir.clone(), live),
+            &recording_options(&key),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.transcript, "[00:01] Lena Wagner, bitte an die Tafel.\n");
+        assert_eq!(outcome.transcript_anon, "[00:01] [Schüler A], bitte an die Tafel.\n");
+        assert!(
+            outcome
+                .log
+                .iter()
+                .any(|l| l.starts_with("Transkription während der Aufnahme: 1 Abschnitte")),
+            "{:?}",
+            outcome.log
+        );
+        // Audio wie bisher nach der Transkription gelöscht, Ergebnisse verschlüsselt.
+        assert!(!session::audio_dir(&dir).exists());
+        assert_eq!(
+            entries(&dir),
+            ["export.json.enc", "log.txt.enc", "transcript.anon.txt.enc"]
+        );
+        let export = String::from_utf8(crypt::read(&dir.join("export.json.enc"), &key).unwrap()).unwrap();
+        assert!(export.contains("\"audio_seconds\": 1.0"), "{export}");
+    }
+
+    #[test]
+    fn unusable_live_transcript_falls_back_to_full_transcription() {
+        for live in [
+            Ok(live_transcript(8_000)),
+            Err(anyhow::anyhow!("Whisper auf der GPU abgestürzt")),
+        ] {
+            let sessions = tempfile::tempdir().unwrap();
+            let key = Key::generate().unwrap();
+            let dir = recorded_session(sessions.path(), &key, 16_000);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let notify: Notify = Arc::new(|| {});
+            let err = run_in(
+                sessions.path(),
+                &Source::Live(dir.clone(), LiveTranscriber::finished(live)),
+                &recording_options(&key),
+                &tx,
+                &notify,
+                &Arc::default(),
+            )
+            .unwrap_err();
+            // Die vollständige Transkription lief los (und scheitert hier nur am fehlenden Modell).
+            assert!(format!("{err:#}").contains("Whisper-Modell nicht ladbar"), "{err:#}");
+            let steps: Vec<String> = rx
+                .try_iter()
+                .filter_map(|p| if let Progress::Step(s) = p { Some(s) } else { None })
+                .collect();
+            assert!(steps.iter().any(|s| s.starts_with("Transkribieren")), "{steps:?}");
+            // Die Aufnahme bleibt erhalten.
+            assert!(session::audio_dir(&dir).join("seg_00001.wav.enc").exists());
+        }
+    }
+
+    #[test]
+    fn cancel_while_waiting_for_live_keeps_the_recording() {
+        let sessions = tempfile::tempdir().unwrap();
+        let key = Key::generate().unwrap();
+        let dir = recorded_session(sessions.path(), &key, 16_000);
+        // Läuft noch: Der Sink bleibt offen, die Mitschrift wartet auf weitere Segmente.
+        let (_sink, live) = live::start(recording_options(&key).cfg, None);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let notify: Notify = Arc::new(|| {});
+        let start = Instant::now();
+        let err = run_in(
+            sessions.path(),
+            &Source::Live(dir.clone(), live),
+            &recording_options(&key),
+            &tx,
+            &notify,
+            &Arc::new(AtomicBool::new(true)),
+        )
+        .unwrap_err();
+        assert!(err.is::<Cancelled>(), "{err:#}");
+        assert!(start.elapsed() < Duration::from_secs(3), "{:?}", start.elapsed());
+        assert!(session::audio_dir(&dir).join("seg_00001.wav.enc").exists());
+    }
+
     #[test]
     fn import_routes_by_extension() {
         let import = |p: &str| Source::import(PathBuf::from(p));
-        assert_eq!(import("a/stunde.txt"), Source::Transcript("a/stunde.txt".into()));
-        assert_eq!(import("stunde.MD"), Source::Transcript("stunde.MD".into()));
-        assert_eq!(import("stunde.mp3"), Source::File("stunde.mp3".into()));
-        assert_eq!(import("stunde.webm"), Source::File("stunde.webm".into()));
-        assert_eq!(import("stunde"), Source::File("stunde".into()));
+        assert!(matches!(import("a/stunde.txt"), Source::Transcript(p) if p == Path::new("a/stunde.txt")));
+        assert!(matches!(import("stunde.MD"), Source::Transcript(p) if p == Path::new("stunde.MD")));
+        assert!(matches!(import("stunde.mp3"), Source::File(p) if p == Path::new("stunde.mp3")));
+        assert!(matches!(import("stunde.webm"), Source::File(p) if p == Path::new("stunde.webm")));
+        assert!(matches!(import("stunde"), Source::File(p) if p == Path::new("stunde")));
         assert!(!import("stunde.txt").needs_whisper());
         assert!(import("stunde.wav").needs_whisper());
         assert_eq!(

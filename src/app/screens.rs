@@ -4,6 +4,7 @@
 use super::{DeleteLast, Download, TutoMicApp, stage_of};
 use crate::control::{Command, RecState};
 use crate::icons::{self, Icon};
+use crate::live;
 use crate::theme::{self, BLUE_600, EMERALD_600, ROSE_50, ROSE_600};
 use eframe::egui::{self, Color32, RichText, Sense, Stroke, vec2};
 use std::sync::PoisonError;
@@ -63,16 +64,15 @@ impl TutoMicApp {
                     .as_ref()
                     .map(|(r, _)| (r.recorded(), r.level(), r.device_name.clone()))
                     .unwrap_or_default();
-                let segment = self.cfg.segment_secs;
-                if let Some(cmd) = recording_card(
-                    ui,
-                    state == RecState::Paused,
+                let view = RecordingView {
+                    paused: state == RecState::Paused,
                     elapsed,
                     level,
-                    &device,
-                    segment,
-                    &mut self.delete,
-                ) {
+                    device: &device,
+                    segment_secs: self.cfg.segment_secs,
+                    live: self.live.as_ref().map(crate::live::LiveTranscriber::status),
+                };
+                if let Some(cmd) = recording_card(ui, &view, &mut self.delete) {
                     self.handle(cmd, &ctx);
                 }
             }
@@ -332,16 +332,53 @@ fn record_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
     })
 }
 
+/// Was die Aufnahmekarte anzeigt.
+pub(super) struct RecordingView<'a> {
+    pub paused: bool,
+    /// Gespeicherte Länge (ohne Pausen, nach Löschungen).
+    pub elapsed: Duration,
+    pub level: f32,
+    pub device: &'a str,
+    pub segment_secs: u32,
+    /// Fortschritt der Mitschrift, falls sie läuft. Nur die Zeit, nie der Text: Der Bildschirm im Klassenraum
+    /// ist oft für alle sichtbar.
+    pub live: Option<live::Status>,
+}
+
+/// „12:30“ bzw. „1:02:05“.
+fn clock(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{:02}:{:02}", s / 60, s % 60)
+    }
+}
+
+/// Zeile unter dem Mikrofon: wie weit die Mitschrift ist.
+fn live_line(live: live::Status, elapsed: Duration) -> String {
+    if live.failed {
+        "Mitschreiben folgt nach der Aufnahme".into()
+    } else {
+        // Nach „Letzte Minuten verwerfen“ zieht die Mitschrift etwas später nach.
+        format!(
+            "Mitgeschrieben: {} von {}",
+            clock(live.transcribed.min(elapsed)),
+            clock(elapsed)
+        )
+    }
+}
+
 /// Karte während der Aufnahme. Liefert den gewählten Befehl.
-pub(super) fn recording_card(
-    ui: &mut egui::Ui,
-    paused: bool,
-    elapsed: Duration,
-    level: f32,
-    device: &str,
-    segment_secs: u32,
-    delete: &mut DeleteLast,
-) -> Option<Command> {
+pub(super) fn recording_card(ui: &mut egui::Ui, view: &RecordingView<'_>, delete: &mut DeleteLast) -> Option<Command> {
+    let &RecordingView {
+        paused,
+        elapsed,
+        level,
+        device,
+        segment_secs,
+        live,
+    } = view;
     let mut cmd = None;
     theme::card(ui).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -361,6 +398,13 @@ pub(super) fn recording_card(
                     .small()
                     .color(theme::weak_text(ui)),
             );
+            if let Some(live) = live {
+                ui.label(
+                    RichText::new(live_line(live, elapsed))
+                        .small()
+                        .color(theme::weak_text(ui)),
+                );
+            }
             ui.add_space(16.0);
             ui.horizontal(|ui| {
                 // Zwei Knöpfe zentriert: Breite schätzen und links auffüllen.
@@ -501,5 +545,36 @@ fn step_marker(ui: &mut egui::Ui, state: std::cmp::Ordering) {
         std::cmp::Ordering::Greater => {
             painter.circle_stroke(c, 8.0, Stroke::new(1.5, theme::SLATE_400));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_line_shows_only_progress() {
+        let status = |secs, failed| live::Status {
+            transcribed: Duration::from_secs(secs),
+            failed,
+        };
+        let elapsed = Duration::from_secs(845);
+        assert_eq!(
+            live_line(status(750, false), elapsed),
+            "Mitgeschrieben: 12:30 von 14:05"
+        );
+        // Kurz nach einer Löschung nie mehr als aufgenommen.
+        assert_eq!(
+            live_line(status(900, false), elapsed),
+            "Mitgeschrieben: 14:05 von 14:05"
+        );
+        assert_eq!(
+            live_line(status(3725, false), Duration::from_secs(3725)),
+            "Mitgeschrieben: 1:02:05 von 1:02:05"
+        );
+        assert_eq!(
+            live_line(status(0, true), elapsed),
+            "Mitschreiben folgt nach der Aufnahme"
+        );
     }
 }
