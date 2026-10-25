@@ -1,10 +1,10 @@
-name: Build
+name: Release
 
+# Builds für Linux, Windows und macOS. Läuft nur bei einem Versions-Tag (v*) – dann mit GitHub-Release – oder
+# von Hand über „Run workflow“ (Pakete nur als Artefakte, z. B. zum Testen vor einem Release).
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
   workflow_dispatch:
 
 # Standardmäßig nur lesen; der Release-Job erweitert das für sich.
@@ -15,34 +15,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: System-Abhängigkeiten
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libwayland-dev libclang-dev cmake
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
-
-  dependencies:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny,cargo-machete
-      # Sicherheitslücken, Lizenzen, Herkunft der Crates (siehe deny.toml)
-      - run: cargo deny check
-      # Ungenutzte Abhängigkeiten
-      - run: cargo machete
+  ci:
+    uses: ./.github/workflows/ci.yml
 
   build:
-    needs: [check, dependencies]
+    needs: ci
     strategy:
       fail-fast: false
       matrix:

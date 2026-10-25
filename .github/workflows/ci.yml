@@ -1,0 +1,49 @@
+name: CI
+
+# Schnelle Prüfungen bei jedem Push und Pull Request, nur unter Linux (günstigste Runner).
+# Die Builds für alle Plattformen laufen in release.yml.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  pull_request:
+    paths-ignore: ["**.md"]
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Neuer Push auf denselben Branch bricht den laufenden Durchlauf ab.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System-Abhängigkeiten
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libwayland-dev libclang-dev cmake
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  dependencies:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-machete
+      # Sicherheitslücken, Lizenzen, Herkunft der Crates (siehe deny.toml)
+      - run: cargo deny check
+      # Ungenutzte Abhängigkeiten
+      - run: cargo machete

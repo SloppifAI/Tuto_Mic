@@ -77,8 +77,16 @@ auf der CPU – funktioniert, ist für 45 min Unterricht aber deutlich langsamer
 
 ### Builds
 
-GitHub Actions (`.github/workflows/build.yml`) baut bei jedem Push für Linux, Windows und macOS (Apple
-Silicon, Metal) und lädt die Pakete als Artefakte hoch; ein Tag `v*` erzeugt ein Release.
+GitHub Actions:
+
+- `ci.yml`: bei jedem Push und Pull Request Formatierung, Lints, Tests und Abhängigkeitsprüfung (nur Linux).
+- `release.yml`: Builds für Linux, Windows und macOS (Apple Silicon, Metal). Ein Tag wie `v0.1.0` erzeugt ein
+  GitHub-Release mit den Paketen zum Download; von Hand gestartet („Run workflow“) nur Test-Artefakte.
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0   # Release erstellen
+```
+
 Noch offen: GPU-Builds für Linux/Windows (CUDA/Vulkan), Signierung (macOS-Notarisierung, Windows-Code-Signing),
 Installer.
 
