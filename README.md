@@ -102,9 +102,11 @@ Zusammenfassung fehlt.
 
 ## Installation
 
-### Pakete
+**Schritt-für-Schritt-Anleitung: [docs/installation.md](docs/installation.md)** (Ollama, Download, erster Start mit
+Passwort, Verbindung zu Tuto, häufige Probleme).
 
-Fertige Programme gibt es unter [Releases](https://github.com/SloppifAI/Tuto_Mic/releases):
+Kurz: [Ollama](https://ollama.com) installieren und `ollama pull qwen3.5:9b`, dann das Paket für das System unter
+[Releases](https://github.com/SloppifAI/Tuto_Mic/releases) laden, entpacken und starten:
 
 | System | Datei | GPU |
 |---|---|---|
@@ -112,40 +114,8 @@ Fertige Programme gibt es unter [Releases](https://github.com/SloppifAI/Tuto_Mic
 | macOS (Apple Silicon) | `tuto-mic-macos-arm64.tar.gz` | Metal |
 | Linux (x86_64, glibc ab Ubuntu 22.04) | `tuto-mic-linux-x86_64.tar.gz` | Vulkan |
 
-Das Archiv enthält das Programm `tuto-mic` (bzw. `tuto-mic.exe`) und diese README; es gibt noch keinen
-Installer. Entpacken und starten.
-
-### Voraussetzungen
-
-- **[Ollama](https://ollama.com)** läuft auf demselben Rechner und hat das Modell geladen:
-  `ollama pull qwen3.5:9b` (ein anderes Modell über `TUTO_MIC_OLLAMA_MODEL`).
-- **GPU** wird automatisch genutzt (Vulkan unter Windows/Linux, Metal unter macOS). Ohne passende GPU rechnet
-  Whisper auf der CPU – das funktioniert, ist für eine 45-Minuten-Stunde aber sehr langsam. Unter Linux muss
-  `libvulkan.so.1` vorhanden sein (Paket `libvulkan1`), unter Windows bringt sie der Grafiktreiber mit.
-- **Erster Start:** Die App lädt einmalig das Spracherkennungsmodell (ca. 550 MB, Knopf
-  „Spracherkennung herunterladen“). Danach läuft die Transkription ohne Internet.
-
-### Warnung bei unsignierten Programmen
-
-Die Pakete sind noch nicht signiert (kein Windows-Code-Signing, keine macOS-Notarisierung). Das System warnt
-deshalb beim ersten Start:
-
-- **Windows (SmartScreen):** „Der Computer wurde durch Windows geschützt“ → **Weitere Informationen** →
-  **Trotzdem ausführen**.
-- **macOS (Gatekeeper):** Im Finder Rechtsklick auf `tuto-mic` → **Öffnen** → **Öffnen**. Neuere macOS-Versionen
-  bieten das nicht mehr an; dann nach dem ersten Versuch unter *Systemeinstellungen → Datenschutz & Sicherheit*
-  **Dennoch öffnen** wählen. Alternativ im Terminal das Quarantäne-Attribut entfernen:
-  `xattr -d com.apple.quarantine tuto-mic`.
-
-### Download prüfen
-
-Jedes Release enthält `SHA256SUMS.txt` und einen signierten Herkunftsnachweis (GitHub Build-Provenance), der
-belegt, dass das Paket von der Release-Pipeline dieses Repositorys gebaut wurde:
-
-```sh
-sha256sum -c SHA256SUMS.txt --ignore-missing          # Prüfsumme (macOS: shasum -a 256 -c …)
-gh attestation verify tuto-mic-linux-x86_64.tar.gz --repo SloppifAI/Tuto_Mic
-```
+Die Pakete sind noch nicht signiert; wie man die Warnungen von Windows und macOS beim ersten Start bestätigt,
+steht in der Anleitung.
 
 ## Für Schul-IT und Betreuung
 
