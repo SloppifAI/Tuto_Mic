@@ -13,9 +13,10 @@ on:
 permissions:
   contents: read
 
-# Neuer Push auf denselben Branch bricht den laufenden Durchlauf ab.
+# Neuer Push auf denselben Branch bricht den laufenden Durchlauf ab. `github.workflow` ist beim Aufruf aus
+# release.yml „Release“ – sonst landen Push-CI und Release in derselben Gruppe und brechen sich gegenseitig ab.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
