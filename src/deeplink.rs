@@ -72,10 +72,19 @@ fn listen_on(addr: SocketAddr, on_link: impl Fn(String) + Send + 'static) -> Res
 /// Inhalt der `.desktop`-Datei, mit der sich die App unter Linux für `tutoapp://` anmeldet.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn desktop_entry(exe: &Path) -> String {
-    // Laut Desktop-Entry-Spezifikation: Pfad in Anführungszeichen, darin `"`, `` ` ``, `$` und `\` maskieren.
-    let quoted: String = exe
-        .display()
-        .to_string()
+    let path = exe.display().to_string();
+    // Anführungszeichen nur, wenn nötig: `xdg-open` ohne Desktop-Umgebung (z. B. unter niri) wertet sie nicht aus und
+    // findet das Programm sonst nicht. Laut Spezifikation darin `"`, `` ` ``, `$` und `\` maskieren.
+    let needs_quotes = path
+        .chars()
+        .any(|c| c.is_whitespace() || "\"'\\><~|&;$*?#()`".contains(c));
+    if !needs_quotes {
+        return format!(
+            "[Desktop Entry]\nType=Application\nName=Tuto Mic\nExec={path} %u\nNoDisplay=true\n\
+             MimeType=x-scheme-handler/{SCHEME};\n"
+        );
+    }
+    let quoted: String = path
         .chars()
         .flat_map(|c| match c {
             '"' | '`' | '$' | '\\' => vec!['\\', c],
@@ -212,6 +221,12 @@ mod tests {
             .local_addr()
             .unwrap();
         assert!(forward_to(free, "tutoapp://callback").is_err());
+    }
+
+    #[test]
+    fn desktop_entry_without_special_chars_is_unquoted() {
+        let entry = desktop_entry(Path::new("/home/lena/.local/bin/tuto-mic"));
+        assert!(entry.contains("Exec=/home/lena/.local/bin/tuto-mic %u\n"), "{entry}");
     }
 
     #[test]

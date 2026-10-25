@@ -50,6 +50,8 @@ pub struct TutoPanel {
     form: NewLessonForm,
     confirm_overwrite: bool,
     message: Option<(bool, String)>,
+    /// Warum Rücksprünge über tutoapp:// nicht ankommen können (z. B. Port durch eine zweite App belegt).
+    listen_error: Option<String>,
 }
 
 impl TutoPanel {
@@ -60,11 +62,15 @@ impl TutoPanel {
     pub fn new() -> Self {
         // Rücksprünge, die der Browser über tutoapp:// an eine zweite Instanz gibt, landen hier.
         let (link_tx, links) = mpsc::channel();
-        if let Err(e) = deeplink::listen(move |link| {
+        let listen_error = deeplink::listen(move |link| {
+            log::info!("Rücksprung von Tuto empfangen");
             let _ = link_tx.send(link);
-        }) {
+        })
+        .err()
+        .map(|e| {
             log::warn!("tutoapp://-Rücksprung nicht verfügbar: {e:#}");
-        }
+            format!("{e:#}")
+        });
         let session = store::load().unwrap_or_else(|e| {
             log::warn!("{e:#}");
             None
@@ -83,6 +89,7 @@ impl TutoPanel {
             form: NewLessonForm::default(),
             confirm_overwrite: false,
             message: None,
+            listen_error,
         }
     }
 
@@ -258,11 +265,20 @@ impl TutoPanel {
             }
             return;
         }
-        ui.label("Bitte im Browser bei Tuto anmelden und „Erlauben“ wählen.");
+        ui.label("Bitte im Browser bei Tuto anmelden, „Erlauben“ wählen und die Rückfrage des Browsers bestätigen.");
+        if let Some(e) = &self.listen_error {
+            ui.label(
+                RichText::new(format!(
+                    "Der automatische Rücksprung ist blockiert ({e}). Läuft Tuto Mic ein zweites Mal? Dann diese \
+                     Instanz schließen und die andere verwenden."
+                ))
+                .color(ERROR_RED),
+            );
+        }
         ui.label(
             RichText::new(
-                "Öffnet sich Tuto Mic danach nicht von selbst: die Adresse aus der Adresszeile des Browsers \
-                 (beginnt mit tutoapp://callback) hier einfügen.",
+                "Falls der Browser die Adresse tutoapp://callback?… anzeigt (z. B. in der Adresszeile oder einer \
+                 Fehlermeldung), kann sie auch hier eingefügt werden.",
             )
             .small()
             .weak(),
