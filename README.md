@@ -261,13 +261,13 @@ zu je 1–2 s Rechenzeit, nach dem Ende noch 0,7 s statt 4,5 s am Stück.
 
 - [`ci.yml`](.github/workflows/ci.yml): bei Push und Pull Request `fmt`, `clippy`, `test`, `deny`, `machete`
   (Linux).
-- [`release.yml`](.github/workflows/release.yml): Builds für Linux, Windows, macOS (arm64). Ein Tag `v*`
+- [`release.yml`](.github/workflows/release.yml): Builds für Linux, Windows, macOS (arm64). Ein Versions-Tag (z. B. `0.1`)
   erzeugt ein GitHub-Release mit Paketen, `SHA256SUMS.txt` und (nur bei öffentlichem Repository)
   Herkunftsnachweis; „Run workflow“ baut nur
   Test-Artefakte.
 
 ```sh
-git tag v0.1.0 && git push origin v0.1.0
+git tag 0.2 && git push origin 0.2
 ```
 
 Offen: Signierung (Windows-Code-Signing, macOS-Notarisierung), Installer, `.app`-Paket für macOS.

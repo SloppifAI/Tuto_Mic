@@ -1,10 +1,10 @@
 name: Release
 
-# Builds für Linux, Windows und macOS. Läuft nur bei einem Versions-Tag (v*) – dann mit GitHub-Release – oder
+# Builds für Linux, Windows und macOS. Läuft nur bei einem Versions-Tag wie 0.1 oder 0.2.1 – dann mit GitHub-Release – oder
 # von Hand über „Run workflow“ (Pakete nur als Artefakte, z. B. zum Testen vor einem Release).
 on:
   push:
-    tags: ["v*"]
+    tags: ["[0-9]*"]
   workflow_dispatch:
 
 # Standardmäßig nur lesen; der Release-Job erweitert das für sich.
