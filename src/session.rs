@@ -5,15 +5,26 @@ use chrono::{DateTime, Local};
 use std::path::{Path, PathBuf};
 
 /// Jede Aufnahme bzw. jeder Import bekommt ein eigenes Verzeichnis:
-/// `audio/` (Segmente), `transcript.txt`, `transcript.anon.txt`, `summary.md`, `export.json`, `log.txt`.
+/// `audio/` (Segmente, nur bei Aufnahmen), `transcript.txt`, `transcript.anon.txt`, `summary.md`, `export.json`,
+/// `log.txt`.
 pub fn sessions_dir() -> PathBuf {
     crate::config::dirs().data_dir().join("sessions")
 }
 
-pub fn create(label: Option<&str>) -> Result<PathBuf> {
-    let dir = sessions_dir().join(dir_name(Local::now(), label));
-    std::fs::create_dir_all(audio_dir(&dir))
-        .with_context(|| format!("Aufnahme-Verzeichnis nicht anlegbar: {}", dir.display()))?;
+/// Verzeichnis für eine Aufnahme, mit `audio/` für die Segmente des Recorders.
+pub fn create_recording() -> Result<PathBuf> {
+    let dir = create_in(&sessions_dir(), None)?;
+    let audio = audio_dir(&dir);
+    std::fs::create_dir_all(&audio)
+        .with_context(|| format!("Audio-Verzeichnis nicht anlegbar: {}", audio.display()))?;
+    Ok(dir)
+}
+
+/// Verzeichnis für einen Import (Audiodatei oder Transkript) unterhalb von `sessions`. Ohne `audio/`: Es bliebe
+/// leer, weil importierte Dateien nicht kopiert werden.
+pub fn create_in(sessions: &Path, label: Option<&str>) -> Result<PathBuf> {
+    let dir = sessions.join(dir_name(Local::now(), label));
+    std::fs::create_dir_all(&dir).with_context(|| format!("Aufnahme-Verzeichnis nicht anlegbar: {}", dir.display()))?;
     Ok(dir)
 }
 
@@ -50,5 +61,13 @@ mod tests {
             "2026-10-25_08-05-00_Mathe_7b_Prozente"
         );
         assert_eq!(dir_name(now, Some("Übung-2")), "2026-10-25_08-05-00_Übung-2");
+    }
+
+    #[test]
+    fn import_dir_has_no_audio_dir() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = create_in(base.path(), Some("import")).unwrap();
+        assert!(dir.is_dir());
+        assert!(!audio_dir(&dir).exists());
     }
 }

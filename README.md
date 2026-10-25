@@ -21,7 +21,8 @@ Mikrofon ──► Segmente (10 s, 16 kHz) ──► Whisper (lokal) ──► P
 - **Zusammenfassung** über ein lokales Ollama-Modell
 - **Audio wird nach der Transkription gelöscht** (abschaltbar)
 - **Export-Paket** `export.json`: pseudonymisiertes Transkript + Zusammenfassung für die spätere Aufgabenerstellung
-- **Dev-Modus** (`--dev` oder `TUTO_MIC_DEV=1`): Prompt-Editor, Audiodatei importieren, Original-Transkript, Log
+- **Dev-Modus** (`--dev` oder `TUTO_MIC_DEV=1`): Prompt-Editor, Audiodatei oder Text-Transkript importieren,
+  Original-Transkript, Log
 
 ## Nutzung
 
@@ -30,8 +31,13 @@ tuto-mic                 # GUI
 tuto-mic --dev           # GUI mit Dev-Modus
 tuto-mic download        # Whisper- und VAD-Modell laden (~550 MB, alternativ per Button in der GUI)
 tuto-mic process stunde.mp3 [--no-llm]   # ohne GUI, z. B. zum Prompt-Testen
+tuto-mic process stunde.txt              # fertiges Transkript: ohne Whisper direkt pseudonymisieren und zusammenfassen
 tuto-mic paths           # Pfade von Konfiguration, Prompts, Sessions, Modellen
 ```
+
+`process` entscheidet nach der Endung: `.txt` und `.md` gelten als Text-Transkript (UTF-8, z. B. Demo-Daten),
+alles andere als Audiodatei. Für Transkripte braucht es kein Whisper-Modell; in `export.json` sind dann
+`audio_seconds` und `models.transcription` `null`.
 
 Voraussetzung für die Zusammenfassung: [Ollama](https://ollama.com) läuft lokal und hat ein Modell,
 z. B. `ollama pull qwen3.5:9b`. Ohne Ollama werden Transkript und pseudonymisiertes Transkript trotzdem erstellt.
@@ -44,7 +50,8 @@ Der Zusammenfassungs-Prompt `prompts/summary.md` ist in die App eingebaut. Zum T
 - per Verzeichnis: `TUTO_MIC_PROMPTS=./meine-prompts tuto-mic process stunde.mp3`
   (Datei `summary.md`; fehlt sie, gilt die eingebaute Version).
 
-Das Transkript (`[mm:ss] text` pro Zeile) ersetzt den Platzhalter `{{TRANSKRIPT}}`; fehlt er, wird es angehängt.
+Das Transkript (`[mm:ss] text` pro Zeile; importierte Text-Transkripte unverändert) ersetzt den Platzhalter
+`{{TRANSKRIPT}}`; fehlt er, wird es angehängt.
 
 ## Entwicklung
 
