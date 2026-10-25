@@ -98,7 +98,7 @@ fn desktop_entry(exe: &Path) -> String {
         .any(|c| c.is_whitespace() || "\"'\\><~|&;$*?#()`".contains(c));
     if !needs_quotes {
         return format!(
-            "[Desktop Entry]\nType=Application\nName=Tuto Mic\nExec={path} %u\nNoDisplay=true\n\
+            "[Desktop Entry]\nType=Application\nName=Tuto Mic\nExec={path} %u\nComment=Unterricht aufnehmen und zusammenfassen\nCategories=Education;AudioVideo;\n\
              MimeType=x-scheme-handler/{SCHEME};\n"
         );
     }
@@ -110,7 +110,7 @@ fn desktop_entry(exe: &Path) -> String {
         })
         .collect();
     format!(
-        "[Desktop Entry]\nType=Application\nName=Tuto Mic\nExec=\"{quoted}\" %u\nNoDisplay=true\n\
+        "[Desktop Entry]\nType=Application\nName=Tuto Mic\nExec=\"{quoted}\" %u\nComment=Unterricht aufnehmen und zusammenfassen\nCategories=Education;AudioVideo;\n\
          MimeType=x-scheme-handler/{SCHEME};\n"
     )
 }
@@ -144,9 +144,9 @@ fn registry_commands(exe: &Path) -> Vec<Vec<String>> {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use anyhow::{Context, Result, bail};
+    use anyhow::{Context, Result};
     use std::path::Path;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     const DESKTOP_FILE: &str = "tuto-mic-link.desktop";
 
@@ -161,12 +161,23 @@ mod platform {
         if std::fs::read_to_string(&file).ok().as_deref() != Some(content.as_str()) {
             std::fs::write(&file, content).with_context(|| format!("{} nicht schreibbar", file.display()))?;
         }
-        let status = Command::new("xdg-mime")
-            .args(["default", DESKTOP_FILE, &format!("x-scheme-handler/{}", super::SCHEME)])
-            .status()
-            .context("xdg-mime nicht gefunden")?;
-        if !status.success() {
-            bail!("xdg-mime konnte tutoapp:// nicht registrieren");
+        // Beides ist nur eine Verbesserung: Die Desktop-Datei mit `MimeType` genügt den meisten Systemen, auch dem
+        // Desktop-Portal, über das Browser unter Wayland Links öffnen. `mimeapps.list` kann schreibgeschützt sein
+        // (z. B. von Home Manager verwaltet); dann fragt das System beim ersten Mal, womit geöffnet werden soll.
+        let quiet = |cmd: &mut Command| {
+            cmd.stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        if !quiet(Command::new("update-desktop-database").arg(&dir)) {
+            log::info!("update-desktop-database nicht verfügbar oder fehlgeschlagen");
+        }
+        let scheme = format!("x-scheme-handler/{}", super::SCHEME);
+        if !quiet(Command::new("xdg-mime").args(["default", DESKTOP_FILE, &scheme])) {
+            log::warn!(
+                "tutoapp:// nicht als Standard eingetragen (mimeapps.list schreibgeschützt oder xdg-mime fehlt)"
+            );
         }
         Ok(())
     }
@@ -250,6 +261,8 @@ mod tests {
     #[test]
     fn desktop_entry_quotes_path() {
         let entry = desktop_entry(Path::new("/opt/Tuto Mic/$bin/tuto-mic"));
+        // Sichtbar: Das Desktop-Portal blendet versteckte Programme in seiner Auswahl aus.
+        assert!(!entry.contains("NoDisplay"));
         assert!(entry.contains("Exec=\"/opt/Tuto Mic/\\$bin/tuto-mic\" %u\n"), "{entry}");
         assert!(entry.contains("MimeType=x-scheme-handler/tutoapp;"));
     }
