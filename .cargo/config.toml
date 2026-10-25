@@ -1,0 +1,4 @@
+[alias]
+# Entwicklung mit NVIDIA-GPU, immer in derselben Kombination (Release + CUDA), damit whisper.cpp nicht neu
+# übersetzt wird: in `nix develop .#cuda` → `cargo gpu --dev`
+gpu = "run --release --features cuda --"

@@ -14,8 +14,17 @@ cargo fmt                                    # Formatierung (rustfmt.toml)
 cargo deny check                             # Sicherheitslücken, Lizenzen (deny.toml)
 cargo machete                                # ungenutzte Abhängigkeiten
 cargo run -- --dev                           # GUI mit Dev-Modus
-nix develop .#cuda -c cargo run --release --features cuda -- --dev   # mit NVIDIA-GPU
+nix develop .#cuda -c cargo gpu --dev       # mit NVIDIA-GPU (Alias in .cargo/config.toml)
 ```
+
+## Wartezeiten vermeiden
+
+- Jede neue Kombination aus Profil und Features (Debug/Release × CUDA/Vulkan) übersetzt whisper.cpp neu
+  (~10 min). Nur zwei Kombinationen verwenden: Prüfungen (`cargo test`/`clippy`) in `nix develop`, die App mit
+  GPU über `cargo gpu` in `nix develop .#cuda`.
+- Praxistests mit kurzen Clips (20 s bis 3 min) oder Text-Transkripten; ganze Stunden erst zur Abschlussprüfung.
+- Zusätzliche Git-Worktrees (z. B. Subagenten) mit `CARGO_TARGET_DIR` auf das `target/` des Hauptverzeichnisses
+  bauen, sonst übersetzt jeder whisper.cpp erneut.
 
 Vor dem Abschluss einer Aufgabe müssen `fmt`, `clippy` und `test` ohne Befund durchlaufen; die CI prüft
 dasselbe plus `deny` und `machete`.
