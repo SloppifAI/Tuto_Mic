@@ -61,6 +61,13 @@ pub struct Lesson {
     pub released: bool,
 }
 
+/// Klasse mit den Anzeigenamen ihrer Schüler:innen (nur für die lokale Pseudonymisierung).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ClassRoster {
+    pub class: SchoolClass,
+    pub students: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NewLesson {
     pub class_id: u64,
@@ -184,13 +191,16 @@ impl Client {
     }
 
     /// Namen der Schüler:innen in den Klassen der Lehrkraft (inkl. aktueller Vertretung), nur für die lokale
-    /// Pseudonymisierung. `None`, wenn Tuto das (noch) nicht anbietet oder das Token das Recht `roster:read`
-    /// nicht hat – dann gilt nur die lokale Klassenliste.
+    /// Pseudonymisierung. `None`, wenn Tuto das (noch) nicht anbietet (404) – dann gilt nur die lokale Klassenliste.
+    /// Ein Zugang von vor `roster:read` (403) ist ein Fehler mit dem Hinweis, neu zu verbinden.
     pub fn roster(&self) -> Result<Option<Vec<String>>> {
-        #[derive(Deserialize)]
-        struct ClassRoster {
-            students: Vec<String>,
-        }
+        Ok(self
+            .roster_by_class()?
+            .map(|classes| classes.into_iter().flat_map(|c| c.students).collect()))
+    }
+
+    /// Wie [`Self::roster`], nach Klassen gruppiert.
+    pub fn roster_by_class(&self) -> Result<Option<Vec<ClassRoster>>> {
         let resp = self
             .agent
             .get(self.url("/roster"))
@@ -198,15 +208,14 @@ impl Client {
             .header("Authorization", self.auth())
             .call();
         match self.json::<Data<Vec<ClassRoster>>>(resp) {
-            Ok(data) => Ok(Some(data.data.into_iter().flat_map(|c| c.students).collect())),
-            Err(e)
-                if matches!(
-                    e.downcast_ref::<ApiError>(),
-                    Some(ApiError::Forbidden(_) | ApiError::NotFound(_))
-                ) =>
-            {
-                Ok(None)
-            }
+            Ok(data) => Ok(Some(data.data)),
+            Err(e) if matches!(e.downcast_ref::<ApiError>(), Some(ApiError::NotFound(_))) => Ok(None),
+            Err(e) if matches!(e.downcast_ref::<ApiError>(), Some(ApiError::Forbidden(_))) => Err(ApiError::Forbidden(
+                "Der Tuto-Zugang hat noch kein Recht auf die Klassenliste. Bitte oben rechts die Verbindung trennen \
+                 und neu verbinden."
+                    .into(),
+            )
+            .into()),
             Err(e) => Err(e),
         }
     }
@@ -458,10 +467,12 @@ mod tests {
 
     #[test]
     fn roster_unavailable_is_not_an_error() {
-        for status in [403, 404] {
-            let (url, _server) = serve_once(status, r#"{"message":"nein"}"#);
-            assert_eq!(client(&url).roster().unwrap(), None, "Status {status}");
-        }
+        let (url, _server) = serve_once(404, r#"{"message":"nein"}"#);
+        assert_eq!(client(&url).roster().unwrap(), None);
+        // Alter Zugang ohne roster:read: Fehler mit Hinweis auf neues Verbinden.
+        let (url, _server) = serve_once(403, r#"{"message":"Invalid ability provided."}"#);
+        let err = client(&url).roster().unwrap_err();
+        assert!(format!("{err}").contains("neu verbinden"), "{err}");
         let (url, _server) = serve_once(401, r#"{"message":"Unauthenticated."}"#);
         assert!(client(&url).roster().is_err());
     }

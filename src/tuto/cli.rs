@@ -31,6 +31,8 @@ pub enum TutoCmd {
         #[arg(long)]
         lesson: u64,
     },
+    /// Klassenliste aus Tuto prüfen: zeigt je Klasse nur die Anzahl der Namen, nicht die Namen.
+    Roster,
     /// Verbindung trennen (Token bei Tuto ungültig machen und lokal löschen).
     Logout,
 }
@@ -81,6 +83,18 @@ pub fn run(cmd: TutoCmd, cfg: &Config) -> Result<()> {
                 l.class.name,
                 l.held_on.format("%d.%m.%Y")
             );
+            Ok(())
+        }
+        TutoCmd::Roster => {
+            match with_session(super::Client::roster_by_class)? {
+                Some(classes) if classes.is_empty() => println!("Keine Klassen."),
+                Some(classes) => {
+                    for c in classes {
+                        println!("{:>8}  {} Namen", c.class.name, c.students.len());
+                    }
+                }
+                None => println!("Diese Tuto-Instanz bietet die Klassenliste noch nicht an."),
+            }
             Ok(())
         }
         TutoCmd::Logout => {
