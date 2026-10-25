@@ -3,7 +3,9 @@
 //! Der Schlüssel wird bei jedem Start mit Argon2id aus dem Passwort und einem zufälligen Salt abgeleitet und lebt
 //! nur im Arbeitsspeicher. Ohne Passwort ist nichts davon lesbar, auch nicht im selben Benutzerkonto. Gespeichert
 //! wird nur das Salt (nicht geheim, `config.salt`); ob das Passwort stimmt, zeigt sich daran, dass sich
-//! `config.json.enc` entschlüsseln lässt. Vergessenes Passwort = Konfiguration weg ([`reset`]).
+//! `config.json.enc` entschlüsseln lässt. Ein vergessenes Passwort lässt sich in der App bewusst nicht zurücksetzen –
+//! sonst könnte jeder ohne Passwort ein eigenes setzen und die App übernehmen. Das macht die Betreuung, indem sie
+//! die Dateien löscht (siehe docs/installation.md).
 
 use crate::config::Config;
 use crate::crypt::{self, Key};
@@ -79,11 +81,6 @@ pub fn unlock(password: &str) -> Result<()> {
     Ok(())
 }
 
-/// Passwort vergessen: Einstellungen, Klassenliste und eigener Prompt werden gelöscht, danach neu festlegen.
-pub fn reset() -> Result<()> {
-    reset_in(&Paths::current())
-}
-
 fn remember(key: Key) {
     // Ein zweites Entsperren im selben Prozess hat denselben Schlüssel; der erste bleibt gültig.
     let _ = UNLOCKED.set(key);
@@ -150,6 +147,8 @@ fn unlock_in(paths: &Paths, password: &str) -> Result<Key> {
     Ok(key)
 }
 
+/// Was die Betreuung von Hand tut (Dateien löschen), hier nur für Tests.
+#[cfg(test)]
 fn reset_in(paths: &Paths) -> Result<()> {
     crypt::remove_protected(&paths.config)?;
     crypt::remove_protected(&paths.prompt)?;

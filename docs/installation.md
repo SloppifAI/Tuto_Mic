@@ -45,7 +45,7 @@ Beim ersten Zugriff auf das Mikrofon fragt das System nach der Erlaubnis – zus
 ## 3. Einrichten (einmalig)
 
 1. **Passwort festlegen.** Tuto Mic verschlüsselt damit Einstellungen und Klassenliste. Es wird bei jedem Start
-   gebraucht und lässt sich **nicht wiederherstellen** („Passwort vergessen?“ setzt die Einstellungen zurück).
+   gebraucht und lässt sich **nicht wiederherstellen**. Es sollten nur die Betreuung bzw. die Lehrkräfte kennen.
 2. **Spracherkennung herunterladen.** Knopf auf der Startseite, ca. 550 MB. Danach funktioniert die
    Transkription ohne Internet.
 3. **Mit Tuto verbinden.** Oben rechts „Mit Tuto verbinden“ → im Browser bei Tuto anmelden → **Erlauben** → die
@@ -71,6 +71,20 @@ Beim ersten Zugriff auf das Mikrofon fragt das System nach der Erlaubnis – zus
 - **Zustand prüfen:** `tuto-mic info` im Terminal zeigt GPU, Modelle und Konfiguration (fragt nach dem Passwort).
 - Weitere Einstellungen über Umgebungsvariablen: siehe [README, Für Schul-IT](../README.md#für-schul-it-und-betreuung).
 
+## Passwort zurücksetzen (nur Betreuung)
+
+In der App gibt es dafür bewusst keinen Knopf: Sonst könnte jemand ohne Passwort ein eigenes festlegen und
+Einstellungen oder Prompt ändern. Wer Zugriff auf das Benutzerkonto des Rechners hat, löscht bei geschlossener
+App diese Dateien (Ordner zeigt `tuto-mic paths` unter „Konfiguration“):
+
+- `config.salt`
+- `config.json.enc`
+- `prompts/summary.md.enc` (falls vorhanden)
+
+Beim nächsten Start wird ein neues Passwort festgelegt; Einstellungen, lokale Klassenliste und eigener Prompt sind
+dann auf den Standardwerten. Ordner: Windows `%APPDATA%\Tuto\tuto-mic\config\`, macOS
+`~/Library/Application Support/de.Tuto.tuto-mic/`, Linux `~/.config/tuto-mic/`.
+
 ## Häufige Probleme
 
 | Problem | Lösung |
@@ -79,7 +93,7 @@ Beim ersten Zugriff auf das Mikrofon fragt das System nach der Erlaubnis – zus
 | Transkription sehr langsam | `tuto-mic info` zeigt, ob eine GPU gefunden wurde. Grafiktreiber aktualisieren. |
 | Nach „Erlauben“ passiert nichts | Rückfrage des Browsers bestätigen; Tuto Mic darf nur einmal laufen. Notfalls Adresse einfügen (siehe oben). |
 | Windows: Programm startet nicht, Meldung zu `vulkan-1.dll` | Aktuellen Grafiktreiber des Herstellers installieren. |
-| Passwort vergessen | Auf dem Sperrbildschirm „Passwort vergessen?“ → Zurücksetzen, dann neu einrichten. |
+| Passwort vergessen | Nur die Betreuung kann zurücksetzen: siehe „Passwort zurücksetzen“ oben. |
 
 ## Download prüfen (optional)
 

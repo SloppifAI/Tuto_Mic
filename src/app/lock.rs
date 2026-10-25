@@ -9,8 +9,6 @@ pub struct LockScreen {
     password: String,
     confirm: String,
     error: Option<String>,
-    /// Rückfrage „Passwort vergessen – alles zurücksetzen?“ offen.
-    confirm_reset: bool,
 }
 
 impl LockScreen {
@@ -51,7 +49,7 @@ impl LockScreen {
                             .desired_width(f32::INFINITY),
                     )
                     .labelled_by(label.id);
-                if !ui.memory(|m| m.has_focus(field.id)) && self.password.is_empty() && !self.confirm_reset {
+                if !ui.memory(|m| m.has_focus(field.id)) && self.password.is_empty() {
                     field.request_focus();
                 }
                 let mut submit = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -89,40 +87,8 @@ impl LockScreen {
                 if let Some(e) = &self.error {
                     ui.label(RichText::new(e).color(ROSE_600));
                 }
-                if !setup {
-                    ui.add_space(4.0);
-                    self.ui_reset(ui);
-                }
             });
         });
         unlocked
-    }
-
-    fn ui_reset(&mut self, ui: &mut egui::Ui) {
-        if !self.confirm_reset {
-            if ui
-                .add(egui::Button::new(RichText::new("Passwort vergessen?").color(theme::weak_text(ui))).frame(false))
-                .clicked()
-            {
-                self.confirm_reset = true;
-            }
-            return;
-        }
-        ui.label(
-            "Ohne Passwort lassen sich Einstellungen, Klassenliste und eigener Prompt nicht wiederherstellen. \
-             Zurücksetzen löscht sie; danach gelten die Standardwerte und ein neues Passwort wird festgelegt.",
-        );
-        ui.horizontal(|ui| {
-            let danger = egui::Button::new(RichText::new("Zurücksetzen").color(egui::Color32::WHITE)).fill(ROSE_600);
-            if ui.add(danger).clicked() {
-                match unlock::reset() {
-                    Ok(()) => *self = Self::default(),
-                    Err(e) => self.error = Some(format!("{e:#}")),
-                }
-            }
-            if ui.button("Abbrechen").clicked() {
-                self.confirm_reset = false;
-            }
-        });
     }
 }
