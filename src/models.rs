@@ -1,0 +1,55 @@
+use anyhow::{Context, Result, bail};
+use std::io::{Read, Write};
+use std::path::Path;
+
+pub struct ModelSpec {
+    pub label: &'static str,
+    pub file: &'static str,
+    pub url: &'static str,
+}
+
+/// large-v3-turbo, 5-bit quantisiert (~550 MB): kaum schlechter als die volle Variante (1,6 GB).
+pub const WHISPER: ModelSpec = ModelSpec {
+    label: "Whisper large-v3-turbo (q5_0)",
+    file: "ggml-large-v3-turbo-q5_0.bin",
+    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+};
+
+/// Silero-VAD: verhindert Halluzinationen in Sprechpausen.
+pub const VAD: ModelSpec = ModelSpec {
+    label: "Silero VAD v5.1.2",
+    file: "ggml-silero-v5.1.2.bin",
+    url: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin",
+};
+
+/// Lädt `url` nach `dest` (über eine `.part`-Datei, damit abgebrochene Downloads nicht als fertig gelten).
+pub fn download(url: &str, dest: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<()> {
+    std::fs::create_dir_all(dest.parent().context("Zielpfad ohne Verzeichnis")?)?;
+    let mut resp = ureq::get(url)
+        .call()
+        .with_context(|| format!("Download fehlgeschlagen: {url}"))?;
+    let total = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+    let part = dest.with_extension("part");
+    let mut file = std::fs::File::create(&part)?;
+    let mut reader = resp.body_mut().with_config().limit(u64::MAX).reader();
+    let mut buf = vec![0u8; 1 << 16];
+    let mut done = 0u64;
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])?;
+        done += n as u64;
+        progress(done, total);
+    }
+    if total.is_some_and(|t| t != done) {
+        bail!("Download unvollständig: {done} von {} Bytes", total.unwrap());
+    }
+    std::fs::rename(part, dest)?;
+    Ok(())
+}
