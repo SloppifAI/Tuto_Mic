@@ -242,6 +242,22 @@ fn ui_preview() {
         TutoMicApp::draw,
     );
     page(
+        "15-namen-warnung",
+        false,
+        |ctx| {
+            let outcome = Outcome {
+                names_warning: Some(
+                    "Die Klassenliste konnte nicht aus Tuto geladen werden – Schülernamen sind womöglich nicht \
+                     ersetzt. Bitte die Zusammenfassung vor dem Senden auf Schülernamen prüfen."
+                        .into(),
+                ),
+                ..outcome()
+            };
+            app(ctx, TutoPanel::offline(), Some(outcome), true)
+        },
+        TutoMicApp::draw,
+    );
+    page(
         "14-passwort",
         false,
         |ctx| app(ctx, TutoPanel::offline(), None, true),

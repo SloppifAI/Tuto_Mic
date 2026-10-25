@@ -62,6 +62,16 @@ const COMMON_SUBJECTS: &[&str] = &[
     "Informatik",
 ];
 
+/// Stunden von heute aus Tuto.
+#[derive(PartialEq, Eq)]
+enum LessonsState {
+    Needed,
+    Loading,
+    Loaded,
+    /// Fehlgeschlagen: anzeigen statt im nächsten Frame erneut anzufragen.
+    Failed(String),
+}
+
 pub struct TutoPanel {
     session: Option<Session>,
     login: Option<PendingLogin>,
@@ -73,7 +83,7 @@ pub struct TutoPanel {
     classes: Vec<SchoolClass>,
     /// Fächer aus Tuto für die Auswahl beim Anlegen.
     subjects: Vec<String>,
-    loaded: bool,
+    lessons_state: LessonsState,
     selected: Option<u64>,
     form: NewLessonForm,
     confirm_overwrite: bool,
@@ -142,7 +152,7 @@ impl TutoPanel {
             lessons: Vec::new(),
             classes: Vec::new(),
             subjects: Vec::new(),
-            loaded: false,
+            lessons_state: LessonsState::Needed,
             selected: None,
             form: NewLessonForm::default(),
             confirm_overwrite: false,
@@ -206,7 +216,7 @@ impl TutoPanel {
                         self.message = Some((false, format!("{e:#}")));
                     }
                     self.session = Some(session);
-                    self.loaded = false;
+                    self.lessons_state = LessonsState::Needed;
                 }
                 Event::Loaded {
                     lessons,
@@ -231,7 +241,7 @@ impl TutoPanel {
                     }
                     self.lessons = lessons;
                     self.classes = classes;
-                    self.loaded = true;
+                    self.lessons_state = LessonsState::Loaded;
                 }
                 Event::Created(lesson) => {
                     self.selected = Some(lesson.id);
@@ -256,10 +266,14 @@ impl TutoPanel {
                     // Für die nächste Aufnahme neu vorbelegen.
                     self.plan = Plan::Undecided;
                     self.plan_applied = false;
-                    self.loaded = false;
+                    self.lessons_state = LessonsState::Needed;
+                }
+                Event::Failed(e) if self.lessons_state == LessonsState::Loading => {
+                    self.lessons_state = LessonsState::Failed(e);
                 }
                 Event::Failed(e) => self.message = Some((false, e)),
                 Event::Disconnected => {
+                    self.lessons_state = LessonsState::Needed;
                     let _ = store::delete();
                     self.session = None;
                     self.message = Some((false, ApiError::Unauthorized.to_string()));
@@ -327,7 +341,7 @@ impl TutoPanel {
             });
         }
         self.lessons.clear();
-        self.loaded = false;
+        self.lessons_state = LessonsState::Needed;
         self.selected = None;
         if let Err(e) = store::delete() {
             self.message = Some((false, format!("{e:#}")));
@@ -443,9 +457,48 @@ impl TutoPanel {
         }
     }
 
+    /// Nach Verwerfen oder Abbruch: Die nächste Aufnahme gehört zu einer anderen Stunde, also Stundenplan neu laden
+    /// und nach der Uhrzeit neu vorbelegen statt die alte Wahl stehen zu lassen.
+    pub fn reset_plan(&mut self) {
+        self.plan = Plan::Undecided;
+        self.plan_applied = false;
+        self.selected = None;
+        self.lessons_state = LessonsState::Needed;
+    }
+
+    /// Stößt das Laden der Stunden an und zeigt solange einen Hinweis. Nach einem Fehler wird erst auf Knopfdruck
+    /// erneut gefragt, sonst ginge im Takt der Bildwiederholung eine Anfrage nach der anderen an Tuto.
+    /// Liefert `true`, sobald die Stunden da sind.
+    fn ensure_loaded(&mut self, ui: &mut egui::Ui) -> bool {
+        if self.lessons_state == LessonsState::Loaded {
+            return true;
+        }
+        if let LessonsState::Failed(e) = &self.lessons_state {
+            theme::warning(
+                ui,
+                &format!(
+                    "Die Stunden konnten nicht aus Tuto geladen werden ({e}). Bitte die Internetverbindung prüfen."
+                ),
+            );
+            if ui.button("Erneut versuchen").clicked() {
+                self.lessons_state = LessonsState::Needed;
+            }
+            return false;
+        }
+        if self.busy.is_none() {
+            self.load(ui.ctx());
+        }
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(RichText::new("Stunden werden geladen …").color(theme::weak_text(ui)));
+        });
+        false
+    }
+
     /// Stunden, Klassen, Fächer und Stundenplan von heute im Hintergrund laden.
     fn load(&mut self, ctx: &egui::Context) {
         let today = Local::now().date_naive();
+        self.lessons_state = LessonsState::Loading;
         self.client_job(
             "Lade Stunden …",
             ctx,
@@ -485,15 +538,7 @@ impl TutoPanel {
         if self.session.is_none() {
             return;
         }
-        let ctx = ui.ctx().clone();
-        if !self.loaded {
-            if self.busy.is_none() {
-                self.load(&ctx);
-            }
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(RichText::new("Lade deine Stunden …").color(theme::weak_text(ui)));
-            });
+        if !self.ensure_loaded(ui) {
             return;
         }
         let mut options: Vec<(Plan, String)> = Vec::new();
@@ -579,8 +624,7 @@ impl TutoPanel {
     }
 
     fn ui_lessons(&mut self, ui: &mut egui::Ui, cfg: &Config, summary: Option<&str>, ctx: &egui::Context) {
-        if !self.loaded {
-            self.load(ctx);
+        if !self.ensure_loaded(ui) {
             return;
         }
         self.apply_plan(summary);
@@ -588,7 +632,7 @@ impl TutoPanel {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("Deine Stunden heute, {}", Local::now().format("%d.%m.%Y"))).color(weak));
             if ui.small_button("Aktualisieren").clicked() {
-                self.loaded = false;
+                self.lessons_state = LessonsState::Needed;
             }
         });
         if self.lessons.is_empty() && !self.form.open {
@@ -633,7 +677,7 @@ impl TutoPanel {
         }
         // Schon bei der Auswahl warnen, nicht erst beim Senden.
         if let Some(lesson) = lesson.as_ref().filter(|l| l.summary.is_some() || l.released) {
-            warning(
+            theme::warning(
                 ui,
                 if lesson.released {
                     "Diese Stunde hat schon eine Zusammenfassung und die Hausaufgabe ist freigegeben. Beim Senden wird \
@@ -832,23 +876,6 @@ fn current_slot(entries: &[TimetableEntry], now: chrono::NaiveTime) -> Option<us
         })
 }
 
-/// Hinweis in Bernstein: Achtung, aber kein Fehler.
-fn warning(ui: &mut egui::Ui, text: &str) {
-    let (fill, fg) = if ui.visuals().dark_mode {
-        (Color32::from_rgb(0x45, 0x1a, 0x03), Color32::from_rgb(0xfc, 0xd3, 0x4d))
-    } else {
-        (Color32::from_rgb(0xff, 0xf7, 0xe6), theme::AMBER_700)
-    };
-    egui::Frame::new()
-        .fill(fill)
-        .corner_radius(egui::CornerRadius::same(10))
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new(text).color(fg));
-        });
-}
-
 /// Auswählbare Zeile für eine Stunde: Klasse, Fach, Thema und Hinweis auf eine vorhandene Zusammenfassung.
 fn lesson_row(ui: &mut egui::Ui, lesson: &Lesson, selected: bool) -> egui::Response {
     let dark = ui.visuals().dark_mode;
@@ -939,7 +966,7 @@ impl TutoPanel {
                 id: 3,
                 name: "7b".into(),
             }],
-            loaded: true,
+            lessons_state: LessonsState::Loaded,
             selected,
             ..Self::offline()
         }

@@ -1,7 +1,7 @@
 //! Die Seite für Lehrkräfte: je nach Zustand Start, laufende Aufnahme, Auswertung oder Ergebnis. Die einzelnen
 //! Karten sind freie Funktionen mit einfachen Eingaben, damit sie sich ohne Mikrofon testen lassen.
 
-use super::{DeleteLast, Download, TutoMicApp, stage_of};
+use super::{Confirm, DeleteLast, Download, TutoMicApp, stage_of};
 use crate::control::{Command, RecState};
 use crate::icons::{self, Icon};
 use crate::live;
@@ -79,8 +79,30 @@ impl TutoMicApp {
             RecState::Processing => {
                 if let Some(p) = &self.processing {
                     let cancelling = p.abort.load(Ordering::Relaxed);
-                    if processing_card(ui, stage_of(&p.step), p.whisper_pct, cancelling) {
-                        p.abort.store(true, Ordering::Relaxed);
+                    let abort = p.abort.clone();
+                    if processing_card(
+                        ui,
+                        stage_of(&p.step),
+                        p.whisper_pct,
+                        cancelling || self.confirm == Some(Confirm::Cancel),
+                    ) {
+                        self.confirm = Some(Confirm::Cancel);
+                    }
+                    // Abbrechen kostet die ganze Stunde (der Schlüssel geht mit der Auswertung), daher nachfragen.
+                    if self.confirm == Some(Confirm::Cancel) && !cancelling {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Abbrechen? Die Aufnahme dieser Stunde geht dabei verloren.");
+                            let danger =
+                                egui::Button::new(RichText::new("Abbrechen").color(Color32::WHITE)).fill(ROSE_600);
+                            if ui.add(danger).clicked() {
+                                abort.store(true, Ordering::Relaxed);
+                                self.confirm = None;
+                            }
+                            if ui.button("Weiter auswerten").clicked() {
+                                self.confirm = None;
+                            }
+                        });
                     }
                 }
             }
@@ -149,9 +171,16 @@ impl TutoMicApp {
                     title.id
                 })
                 .inner;
+            if let Some(warning) = &outcome.names_warning {
+                theme::warning(ui, warning);
+                ui.add_space(4.0);
+            }
             ui.label(
-                RichText::new("Bitte prüfen und bei Bedarf direkt hier anpassen. Es stehen keine Namen darin.")
-                    .color(theme::weak_text(ui)),
+                RichText::new(
+                    "Bitte prüfen und bei Bedarf direkt hier anpassen. Namen aus der Klassenliste sind durch \
+                     Platzhalter wie [Schüler A] ersetzt.",
+                )
+                .color(theme::weak_text(ui)),
             );
             ui.add_space(4.0);
             match &mut outcome.summary {
@@ -179,7 +208,7 @@ impl TutoMicApp {
         });
         ui.add_space(16.0);
         // Nicht gesendete Auswertungen nicht liegen lassen: Verwerfen löscht die Daten auf diesem Rechner.
-        if self.confirm_discard {
+        if self.confirm == Some(Confirm::Discard) {
             ui.horizontal(|ui| {
                 ui.label("Nicht gesendet. Auswertung verwerfen und die Daten auf diesem Rechner löschen?");
                 let danger = egui::Button::new(RichText::new("Verwerfen").color(Color32::WHITE)).fill(ROSE_600);
@@ -187,11 +216,11 @@ impl TutoMicApp {
                     self.discard_outcome();
                 }
                 if ui.button("Abbrechen").clicked() {
-                    self.confirm_discard = false;
+                    self.confirm = None;
                 }
             });
         } else if ui.button("Verwerfen und neue Aufnahme").clicked() {
-            self.confirm_discard = true;
+            self.confirm = Some(Confirm::Discard);
         }
     }
 }

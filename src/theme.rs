@@ -229,6 +229,23 @@ pub fn window_icon() -> egui::IconData {
         .expect("eingebettetes PNG ist gültig")
 }
 
+/// Hinweis in Bernstein: Achtung, aber kein Fehler.
+pub fn warning(ui: &mut egui::Ui, text: &str) {
+    let (fill, fg) = if ui.visuals().dark_mode {
+        (Color32::from_rgb(0x45, 0x1a, 0x03), Color32::from_rgb(0xfc, 0xd3, 0x4d))
+    } else {
+        (Color32::from_rgb(0xff, 0xf7, 0xe6), AMBER_700)
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(text).color(fg));
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

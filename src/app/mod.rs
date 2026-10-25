@@ -59,6 +59,22 @@ pub struct Mode {
     pub admin: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Confirm {
+    /// „Auswertung verwerfen?“
+    Discard,
+    /// „Auswertung abbrechen?“
+    Cancel,
+}
+
+/// Schließen des Fensters: Bei ungesendeter Stunde erst nach Rückfrage.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Close {
+    Normal,
+    Asking,
+    Confirmed,
+}
+
 pub struct TutoMicApp {
     cfg: Config,
     mode: Mode,
@@ -79,8 +95,9 @@ pub struct TutoMicApp {
     notice: Option<String>,
     /// Bestätigung nach dem Senden an Tuto.
     success: Option<String>,
-    /// Rückfrage „Auswertung verwerfen?“ offen.
-    confirm_discard: bool,
+    /// Offene Rückfrage auf der Startseite.
+    confirm: Option<Confirm>,
+    close: Close,
     delete: DeleteLast,
     download: Option<Download>,
     tuto: TutoPanel,
@@ -115,7 +132,8 @@ impl TutoMicApp {
             error,
             notice: None,
             success: None,
-            confirm_discard: false,
+            confirm: None,
+            close: Close::Normal,
             delete: DeleteLast {
                 open: false,
                 minutes: 5,
@@ -146,7 +164,8 @@ impl TutoMicApp {
             error: None,
             notice: None,
             success: None,
-            confirm_discard: false,
+            confirm: None,
+            close: Close::Normal,
             delete: DeleteLast {
                 open: false,
                 minutes: 5,
@@ -227,13 +246,21 @@ impl TutoMicApp {
             // Erst nach dem Stoppen weiß die Mitschrift, dass nichts mehr kommt; den Rest erledigt sie dann in der
             // Pipeline. Scheitert das Stoppen, bricht sie beim Freigeben ab.
             let live = self.live.take();
-            rec.stop()?;
+            // Ein Fehler beim Abschließen (z. B. letzter Abschnitt nicht schreibbar) soll nicht die ganze Stunde kosten:
+            // Was bis dahin geschrieben ist, wird trotzdem ausgewertet.
+            let stopped = rec.stop();
             let key = key.ok_or_else(|| anyhow::anyhow!("Schlüssel der Aufnahme fehlt"))?;
             let source = match live {
                 Some(live) => Source::Live(dir, live),
                 None => Source::Session(dir),
             };
             self.start_processing(source, key, ctx);
+            if let Err(e) = stopped {
+                self.notice = Some(format!(
+                    "Beim Beenden der Aufnahme trat ein Fehler auf ({e:#}). Ausgewertet wird, was bis dahin aufgenommen \
+                     wurde."
+                ));
+            }
         }
         Ok(())
     }
@@ -278,11 +305,14 @@ impl TutoMicApp {
                     Progress::Failed(e) => {
                         self.error = Some(e);
                         self.processing = None;
+                        self.tuto.reset_plan();
                         return;
                     }
                     Progress::Cancelled => {
-                        self.notice = Some("Auswertung abgebrochen.".into());
+                        self.notice = Some("Auswertung abgebrochen, die Aufnahme wurde verworfen.".into());
                         self.processing = None;
+                        self.confirm = None;
+                        self.tuto.reset_plan();
                         return;
                     }
                 }
@@ -317,8 +347,9 @@ impl TutoMicApp {
 
     /// Nicht gesendete Auswertung verwerfen: Sitzung löschen (außer der Admin hat das Behalten eingestellt).
     fn discard_outcome(&mut self) {
-        self.confirm_discard = false;
+        self.confirm = None;
         let Some(outcome) = self.outcome.take() else { return };
+        self.tuto.reset_plan();
         if self.cfg.keep_sessions_after_upload {
             self.notice = Some("Auswertung verworfen. Die Daten bleiben erhalten (Einstellung).".into());
         } else if let Err(e) = session::delete(&outcome.dir) {
@@ -447,6 +478,41 @@ impl TutoMicApp {
     }
 }
 
+impl TutoMicApp {
+    /// Schließen während Aufnahme, Auswertung oder mit nicht gesendeter Zusammenfassung erst nach Rückfrage: Der
+    /// Schlüssel der Sitzung lebt nur im Arbeitsspeicher, die Stunde wäre danach verloren.
+    fn guard_close(&mut self, ctx: &egui::Context) {
+        let unsaved = self.recorder.is_some() || self.processing.is_some() || self.outcome.is_some();
+        if ctx.input(|i| i.viewport().close_requested()) && unsaved && self.close != Close::Confirmed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.close = Close::Asking;
+        }
+        if self.close != Close::Asking {
+            return;
+        }
+        let modal = egui::Modal::new(egui::Id::unique("confirm_close")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(RichText::new("Tuto Mic schließen?").font(theme::heading(18.0)));
+            ui.label("Die Stunde ist noch nicht an Tuto gesendet und geht beim Schließen verloren.");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let danger = egui::Button::new(RichText::new("Trotzdem schließen").color(egui::Color32::WHITE))
+                    .fill(theme::ROSE_600);
+                if ui.add(danger).clicked() {
+                    self.close = Close::Confirmed;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if ui.button("Weiterarbeiten").clicked() {
+                    self.close = Close::Normal;
+                }
+            });
+        });
+        if modal.should_close() {
+            self.close = Close::Normal;
+        }
+    }
+}
+
 impl eframe::App for TutoMicApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -455,6 +521,7 @@ impl eframe::App for TutoMicApp {
         if let Some(lesson) = self.tuto.take_sent() {
             self.after_upload(&lesson);
         }
+        self.guard_close(&ctx);
         if let Some((rec, _)) = &self.recorder {
             if let Some(e) = rec.error()
                 && self.rec_error_seen.as_ref() != Some(&e)

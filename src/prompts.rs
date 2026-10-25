@@ -20,21 +20,24 @@ pub fn override_path() -> PathBuf {
 }
 
 pub fn is_overridden() -> bool {
-    let path = override_path();
-    path.is_file() || crate::crypt::encrypted_path(&path).is_file()
+    crate::crypt::encrypted_path(&override_path()).is_file()
 }
 
-/// Überschriebener Prompt, falls vorhanden, sonst der eingebaute. Der eigene Prompt liegt verschlüsselt (Schlüssel
-/// im Schlüsselbund); eine alte Klartext-Datei wird dabei umgewandelt. Ist er unlesbar, gilt der eingebaute.
+/// Überschriebener Prompt, falls vorhanden, sonst der eingebaute. Ist er unlesbar, gilt der eingebaute.
 pub fn load() -> String {
-    let path = override_path();
-    let key = crate::crypt::config_key().ok();
-    if let Some(key) = &key
-        && let Err(e) = crate::crypt::migrate_protected(&path, key)
-    {
-        log::warn!("Prompt nicht verschlüsselbar: {e:#}");
+    load_from(&override_path(), crate::crypt::config_key().ok().as_ref())
+}
+
+/// Nur die verschlüsselte Fassung zählt. Eine Klartext-Datei übernimmt einmalig das Festlegen des Passworts
+/// (`unlock::setup`); danach würde sie sonst jemand ohne Passwort unbemerkt unterschieben können.
+fn load_from(path: &std::path::Path, key: Option<&crate::crypt::Key>) -> String {
+    if !crate::crypt::encrypted_path(path).is_file() {
+        if path.is_file() {
+            log::warn!("Unverschlüsselter Prompt wird ignoriert: {}", path.display());
+        }
+        return BUILTIN.to_string();
     }
-    match crate::crypt::read_protected(&path, key.as_ref()) {
+    match crate::crypt::read_protected(path, key) {
         Ok(Some(text)) => text,
         Ok(None) => BUILTIN.to_string(),
         Err(e) => {
@@ -65,6 +68,19 @@ pub fn reset() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_encrypted_prompt_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("summary.md");
+        let key = crate::crypt::Key::generate().unwrap();
+        std::fs::write(&path, "Untergeschoben").unwrap();
+        assert_eq!(load_from(&path, Some(&key)), BUILTIN);
+        assert!(path.exists(), "nicht mit dem echten Schlüssel verschlüsseln");
+
+        crate::crypt::write_protected(&path, &key, "Eigener Prompt").unwrap();
+        assert_eq!(load_from(&path, Some(&key)), "Eigener Prompt");
+    }
 
     #[test]
     fn builtin_prompt_has_placeholder() {

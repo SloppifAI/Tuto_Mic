@@ -107,6 +107,9 @@ pub struct Outcome {
     pub transcript: String,
     pub transcript_anon: String,
     pub summary: Option<String>,
+    /// Hinweis für die Lehrkraft, wenn Schülernamen womöglich nicht ersetzt sind (Klassenliste fehlt oder kam
+    /// nicht aus Tuto). Das Log sieht nur die Betreuung.
+    pub names_warning: Option<String>,
     pub log: Vec<String>,
 }
 
@@ -149,7 +152,8 @@ fn run_in(
         notify();
     };
     let mut log = Vec::new();
-    let opts = &with_tuto_roster(opts, &step, &mut log);
+    let (opts, roster_failed) = with_tuto_roster(opts, &step, &mut log);
+    let opts = &opts;
 
     let (dir, transcript, audio_secs) = match source {
         Source::Transcript(path) => {
@@ -209,6 +213,7 @@ fn run_in(
     match finish(&dir, transcript, audio_secs, opts, abort, &step, log) {
         Ok(mut outcome) => {
             outcome.dir = dir;
+            outcome.names_warning = names_warning(&opts.cfg.class_list, roster_failed);
             Ok(outcome)
         }
         Err(e) => {
@@ -223,26 +228,65 @@ fn run_in(
 
 /// Ergänzt die lokale Klassenliste um die Namen aus Tuto (Klassen der Lehrkraft), nur für diesen Lauf im
 /// Arbeitsspeicher. Ohne Zugang oder wenn Tuto die Liste nicht anbietet, bleibt es bei der lokalen Liste.
-fn with_tuto_roster(opts: &Options, step: &dyn Fn(String), log: &mut Vec<String>) -> Options {
+/// Liefert zusätzlich, ob das Laden fehlgeschlagen ist.
+fn with_tuto_roster(opts: &Options, step: &dyn Fn(String), log: &mut Vec<String>) -> (Options, bool) {
     let mut opts = opts.clone();
-    let Some(session) = opts.tuto.clone() else { return opts };
+    let Some(session) = opts.tuto.clone() else {
+        return (opts, false);
+    };
     step("Klassenliste aus Tuto laden …".into());
-    log.push(add_tuto_roster(&mut opts.cfg, session));
-    opts
+    let (line, failed) = match add_tuto_roster(&mut opts.cfg, session) {
+        Ok(line) => (line, false),
+        Err(line) => (line, true),
+    };
+    log.push(line);
+    (opts, failed)
 }
 
-/// Ergänzt `cfg.class_list` um die Namen aus Tuto. Liefert eine Zeile fürs Log (ohne Namen).
-pub(crate) fn add_tuto_roster(cfg: &mut Config, session: crate::tuto::Session) -> String {
+/// Weniger gesprochene Wörter gelten als leere Aufnahme (stummes Mikrofon, nur Stille).
+const MIN_WORDS: usize = 5;
+
+/// Wörter ohne Zeitmarken wie `[00:01]`.
+fn spoken_words(transcript: &str) -> usize {
+    transcript
+        .split_whitespace()
+        .filter(|w| !(w.starts_with('[') && w.ends_with(']') && w.contains(':')))
+        .count()
+}
+
+/// Was die Lehrkraft zur Pseudonymisierung erfahren muss. Ohne Klassenliste oder mit einer, die Tuto nicht
+/// liefern konnte, sind Schülernamen womöglich noch im Text – das darf nicht nur im Log stehen.
+fn names_warning(class_list: &[String], roster_failed: bool) -> Option<String> {
+    let check = "Bitte die Zusammenfassung vor dem Senden auf Schülernamen prüfen.";
+    if class_list.is_empty() {
+        Some(format!(
+            "Keine Klassenliste vorhanden – Schülernamen wurden nicht ersetzt. {check}"
+        ))
+    } else if roster_failed {
+        Some(format!(
+            "Die Klassenliste konnte nicht aus Tuto geladen werden – Schülernamen sind womöglich nicht ersetzt. \
+             {check}"
+        ))
+    } else {
+        None
+    }
+}
+
+/// Ergänzt `cfg.class_list` um die Namen aus Tuto. Liefert eine Zeile fürs Log (ohne Namen), als `Err`, wenn
+/// Tuto die Liste anbietet, sie aber nicht geladen werden konnte.
+pub(crate) fn add_tuto_roster(cfg: &mut Config, session: crate::tuto::Session) -> Result<String, String> {
     match crate::tuto::Client::new(session).roster() {
         Ok(Some(names)) => {
             let line = format!("Klassenliste aus Tuto: {} Namen", names.len());
             let mut seen: std::collections::HashSet<String> = cfg.class_list.iter().map(|n| n.to_lowercase()).collect();
             cfg.class_list
                 .extend(names.into_iter().filter(|n| seen.insert(n.to_lowercase())));
-            line
+            Ok(line)
         }
-        Ok(None) => "Klassenliste aus Tuto nicht verfügbar – nur die lokale Liste".into(),
-        Err(e) => format!("Warnung: Klassenliste aus Tuto nicht ladbar ({e:#}) – nur die lokale Liste"),
+        Ok(None) => Ok("Klassenliste aus Tuto nicht verfügbar – nur die lokale Liste".into()),
+        Err(e) => Err(format!(
+            "Warnung: Klassenliste aus Tuto nicht ladbar ({e:#}) – nur die lokale Liste"
+        )),
     }
 }
 
@@ -446,6 +490,13 @@ fn finish(
 
     if !opts.skip_llm {
         check_abort(abort)?;
+        let words = spoken_words(&outcome.transcript_anon);
+        // Ohne Inhalt erfindet das Modell eine Stunde, die dann gesendet werden könnte.
+        anyhow::ensure!(
+            words >= MIN_WORDS,
+            "In der Aufnahme ist kaum Sprache zu hören ({words} Wörter), daher keine Zusammenfassung. Ist das \
+             Mikrofon angeschlossen und für Tuto Mic freigegeben?"
+        );
         step(format!("Zusammenfassung mit {} …", cfg.ollama_model));
         let mut prompt = prompts::render(&opts.summary_prompt, &outcome.transcript_anon);
         if let Some(context) = &opts.lesson_context {
@@ -565,6 +616,32 @@ mod tests {
 
     fn read(dir: &Path, name: &str) -> String {
         std::fs::read_to_string(dir.join(name)).unwrap()
+    }
+
+    #[test]
+    fn teacher_is_warned_when_names_may_remain() {
+        let names = vec!["Lena Wagner".to_string()];
+        assert_eq!(names_warning(&names, false), None);
+        assert!(names_warning(&names, true).unwrap().contains("nicht aus Tuto geladen"));
+        assert!(names_warning(&[], false).unwrap().contains("Keine Klassenliste"));
+        assert!(names_warning(&[], true).unwrap().contains("Keine Klassenliste"));
+    }
+
+    #[test]
+    fn near_empty_transcript_gets_no_summary() {
+        assert_eq!(spoken_words("[00:01] Ja.\n[00:05] Hm, gut.\n"), 3);
+        let dir = tempfile::tempdir().unwrap();
+        let err = finish(
+            dir.path(),
+            "[00:01] Ja.\n".into(),
+            Some(3.0),
+            &options(NO_OLLAMA),
+            &Arc::default(),
+            &|_| {},
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("kaum Sprache"));
     }
 
     #[test]

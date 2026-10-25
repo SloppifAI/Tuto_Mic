@@ -493,7 +493,8 @@ fn worker(
         if let Some((start, audio)) = timeline.next_chunk(&params, !input_open) {
             if whisper.is_none() {
                 if let Some(session) = tuto.take() {
-                    log::info!("Mitschrift: {}", crate::pipeline::add_tuto_roster(&mut cfg, session));
+                    let line = crate::pipeline::add_tuto_roster(&mut cfg, session).unwrap_or_else(|e| e);
+                    log::info!("Mitschrift: {line}");
                 }
                 whisper = Some(Transcriber::load(&cfg, Some(live_threads()))?);
             }
