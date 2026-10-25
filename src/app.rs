@@ -62,6 +62,8 @@ pub struct TutoMicApp {
     /// Zuletzt angezeigter Aufnahmefehler, damit „Schließen“ ihn nicht im nächsten Frame wieder öffnet.
     rec_error_seen: Option<String>,
     tuto: TutoPanel,
+    /// Hinweis ohne Fehlercharakter, z. B. nach einem Abbruch.
+    notice: Option<String>,
 }
 
 impl TutoMicApp {
@@ -91,6 +93,7 @@ impl TutoMicApp {
             prompt_buf: prompts::load(),
             rec_error_seen: None,
             tuto: TutoPanel::new(),
+            notice: None,
         }
     }
 
@@ -156,6 +159,7 @@ impl TutoMicApp {
     }
 
     fn start_processing(&mut self, source: Source, ctx: &egui::Context) {
+        self.notice = None;
         let (tx, rx) = mpsc::channel();
         let abort = Arc::new(AtomicBool::new(false));
         let opts = pipeline::Options {
@@ -189,6 +193,11 @@ impl TutoMicApp {
                     }
                     Progress::Failed(e) => {
                         self.error = Some(e);
+                        self.processing = None;
+                        return;
+                    }
+                    Progress::Cancelled => {
+                        self.notice = Some("Auswertung abgebrochen.".into());
                         self.processing = None;
                         return;
                     }
@@ -366,6 +375,12 @@ impl TutoMicApp {
             );
         }
 
+        if self.processing.is_none()
+            && let Some(notice) = &self.notice
+        {
+            ui.add_space(12.0);
+            ui.label(RichText::new(notice).weak());
+        }
         if let Some(p) = &self.processing {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
@@ -375,7 +390,9 @@ impl TutoMicApp {
             if p.step.starts_with("Transkrib") {
                 ui.add(egui::ProgressBar::new(p.whisper_pct as f32 / 100.0).show_percentage());
             }
-            if ui.button("Abbrechen").clicked() {
+            if p.abort.load(Ordering::Relaxed) {
+                ui.label(RichText::new("Wird abgebrochen …").weak());
+            } else if ui.button("Abbrechen").clicked() {
                 p.abort.store(true, Ordering::Relaxed);
             }
         }

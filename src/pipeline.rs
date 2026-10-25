@@ -10,9 +10,28 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::Sender;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::time::{Duration, Instant};
+
+/// Die Verarbeitung wurde auf Wunsch abgebrochen – kein Fehler, sondern eine eigene Rückmeldung.
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Auswertung abgebrochen")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+fn check_abort(abort: &AtomicBool) -> Result<()> {
+    if abort.load(Ordering::Relaxed) {
+        return Err(Cancelled.into());
+    }
+    Ok(())
+}
 
 /// Höchstlänge einer Zusammenfassung, die Tuto annimmt (Zeichen).
 pub const TUTO_SUMMARY_LIMIT: usize = 5000;
@@ -67,6 +86,7 @@ pub enum Progress {
     Whisper(i32),
     Done(Box<Outcome>),
     Failed(String),
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -82,8 +102,9 @@ pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 pub fn spawn(source: Source, opts: Options, tx: Sender<Progress>, notify: Notify, abort: Arc<AtomicBool>) {
     std::thread::spawn(move || {
-        let msg = match run(&source, &opts, &tx, &notify, abort) {
+        let msg = match run(&source, &opts, &tx, &notify, &abort) {
             Ok(outcome) => Progress::Done(Box::new(outcome)),
+            Err(e) if e.is::<Cancelled>() => Progress::Cancelled,
             Err(e) => Progress::Failed(format!("{e:#}")),
         };
         let _ = tx.send(msg);
@@ -96,7 +117,7 @@ pub fn run(
     opts: &Options,
     tx: &Sender<Progress>,
     notify: &Notify,
-    abort: Arc<AtomicBool>,
+    abort: &Arc<AtomicBool>,
 ) -> Result<Outcome> {
     run_in(&session::sessions_dir(), source, opts, tx, notify, abort)
 }
@@ -108,7 +129,7 @@ fn run_in(
     opts: &Options,
     tx: &Sender<Progress>,
     notify: &Notify,
-    abort: Arc<AtomicBool>,
+    abort: &Arc<AtomicBool>,
 ) -> Result<Outcome> {
     let step = |s: String| {
         log::info!("{s}");
@@ -130,6 +151,8 @@ fn run_in(
         }
         Source::Session(dir) => {
             let samples = load_audio(&step, &mut log, || audio::load_segments(&session::audio_dir(dir)))?;
+            check_abort(abort)?;
+            // Bei Abbruch bleibt das Audio der Aufnahme erhalten, damit nichts unwiederbringlich verloren geht.
             let (transcript, secs) = transcribe_samples(samples, &opts.cfg, tx, notify, abort, &step, &mut log)?;
             if opts.cfg.delete_audio_after_transcription {
                 let audio_dir = session::audio_dir(dir);
@@ -141,16 +164,30 @@ fn run_in(
         }
         Source::File(path) => {
             let samples = load_audio(&step, &mut log, || audio::load_file(path))?;
-            // Erst nach dem Laden anlegen: Eine unlesbare Datei hinterlässt so kein leeres Verzeichnis.
-            let dir = session::create_in(sessions, import_label(path))?;
+            check_abort(abort)?;
             let (transcript, secs) = transcribe_samples(samples, &opts.cfg, tx, notify, abort, &step, &mut log)?;
-            (dir, transcript, Some(secs))
+            // Erst nach der Transkription anlegen: Ein Fehler oder Abbruch hinterlässt so kein leeres Verzeichnis.
+            (
+                session::create_in(sessions, import_label(path))?,
+                transcript,
+                Some(secs),
+            )
         }
     };
 
-    let mut outcome = finish(&dir, transcript, audio_secs, opts, &step, log)?;
-    outcome.dir = dir;
-    Ok(outcome)
+    match finish(&dir, transcript, audio_secs, opts, abort, &step, log) {
+        Ok(mut outcome) => {
+            outcome.dir = dir;
+            Ok(outcome)
+        }
+        Err(e) => {
+            // Abgebrochene Importe hinterlassen nichts; eine Aufnahme behält ihr Verzeichnis.
+            if e.is::<Cancelled>() && !matches!(source, Source::Session(_)) {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            Err(e)
+        }
+    }
 }
 
 fn import_label(path: &Path) -> Option<&str> {
@@ -193,7 +230,7 @@ fn transcribe_samples(
     cfg: &Config,
     tx: &Sender<Progress>,
     notify: &Notify,
-    abort: Arc<AtomicBool>,
+    abort: &Arc<AtomicBool>,
     step: &dyn Fn(String),
     log: &mut Vec<String>,
 ) -> Result<(String, f64)> {
@@ -209,8 +246,16 @@ fn transcribe_samples(
             let _ = progress_tx.send(Progress::Whisper(p));
             progress_notify();
         },
-        abort,
-    )?;
+        abort.clone(),
+    )
+    // whisper.cpp meldet einen Abbruch als allgemeinen Fehler.
+    .map_err(|e| {
+        if abort.load(Ordering::Relaxed) {
+            Cancelled.into()
+        } else {
+            e
+        }
+    })?;
     drop(samples);
     log.push(format!(
         "Transkription: {} Segmente in {:.1} s",
@@ -227,6 +272,7 @@ fn finish(
     transcript: String,
     audio_secs: Option<f64>,
     opts: &Options,
+    abort: &Arc<AtomicBool>,
     step: &dyn Fn(String),
     mut log: Vec<String>,
 ) -> Result<Outcome> {
@@ -255,13 +301,10 @@ fn finish(
     };
 
     if !opts.skip_llm {
-        let ollama = Ollama::new(&cfg.ollama_url);
+        check_abort(abort)?;
         step(format!("Zusammenfassung mit {} …", cfg.ollama_model));
-        match ollama.generate(
-            &cfg.ollama_model,
-            &prompts::render(&opts.summary_prompt, &outcome.transcript_anon),
-            cfg.num_ctx,
-        ) {
+        let prompt = prompts::render(&opts.summary_prompt, &outcome.transcript_anon);
+        match generate_abortable(cfg, prompt, abort)? {
             Ok(g) => {
                 log.push(format!(
                     "Zusammenfassung ({}): {} Prompt-/{} Output-Tokens, {:.0} s",
@@ -289,6 +332,24 @@ fn finish(
     outcome.log = log;
     step("Fertig".into());
     Ok(outcome)
+}
+
+/// Fragt Ollama in einem eigenen Thread, damit ein Abbruch nicht auf die (minutenlange) Antwort warten muss.
+/// Nach einem Abbruch läuft die Anfrage im Hintergrund zu Ende; ihr Ergebnis wird verworfen.
+fn generate_abortable(cfg: &Config, prompt: String, abort: &AtomicBool) -> Result<Result<crate::llm::Generation>> {
+    let (tx, rx) = mpsc::channel();
+    let (url, model, num_ctx) = (cfg.ollama_url.clone(), cfg.ollama_model.clone(), cfg.num_ctx);
+    std::thread::spawn(move || {
+        let _ = tx.send(Ollama::new(&url).generate(&model, &prompt, num_ctx));
+    });
+    loop {
+        check_abort(abort)?;
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(result) => return Ok(result),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("Ollama-Anfrage unerwartet beendet"),
+        }
+    }
 }
 
 /// Export-Paket für die spätere Aufgabenerstellung (z. B. Cloud-Modell): nur pseudonymisierte Daten, kein
@@ -337,7 +398,16 @@ mod tests {
     }
 
     fn run_finish(dir: &Path, opts: &Options) -> Outcome {
-        finish(dir, TRANSCRIPT.into(), Some(61.4), opts, &|_| {}, Vec::new()).unwrap()
+        finish(
+            dir,
+            TRANSCRIPT.into(),
+            Some(61.4),
+            opts,
+            &Arc::default(),
+            &|_| {},
+            Vec::new(),
+        )
+        .unwrap()
     }
 
     fn read(dir: &Path, name: &str) -> String {
@@ -406,10 +476,67 @@ mod tests {
         assert!(log.contains(&format!("höchstens {TUTO_SUMMARY_LIMIT}")), "{log}");
     }
 
+    #[test]
+    fn cancelled_import_leaves_nothing_behind() {
+        let sessions = tempfile::tempdir().unwrap();
+        let file = sessions.path().join("stunde.txt");
+        std::fs::write(&file, TRANSCRIPT).unwrap();
+        let source = Source::import(file.clone());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let notify: Notify = Arc::new(|| {});
+        let err = run_in(
+            sessions.path(),
+            &source,
+            &options(NO_OLLAMA),
+            &tx,
+            &notify,
+            &Arc::new(AtomicBool::new(true)),
+        )
+        .unwrap_err();
+        assert!(err.is::<Cancelled>(), "{err:#}");
+        let left: Vec<_> = std::fs::read_dir(sessions.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(left, [file]);
+    }
+
+    #[test]
+    fn cancel_does_not_wait_for_ollama() {
+        // Ein „Ollama“, das die Verbindung annimmt, aber nie antwortet.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let _conn = listener.accept();
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        let abort = Arc::new(AtomicBool::new(false));
+        let setter = abort.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            setter.store(true, Ordering::Relaxed);
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let start = Instant::now();
+        let err = finish(
+            dir.path(),
+            TRANSCRIPT.into(),
+            None,
+            &options(&url),
+            &abort,
+            &|_| {},
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(err.is::<Cancelled>(), "{err:#}");
+        assert!(start.elapsed() < Duration::from_secs(3), "{:?}", start.elapsed());
+    }
+
     fn run_source(sessions: &Path, source: &Source, opts: &Options) -> Result<Outcome> {
         let (tx, _rx) = std::sync::mpsc::channel();
         let notify: Notify = Arc::new(|| {});
-        run_in(sessions, source, opts, &tx, &notify, Arc::new(AtomicBool::new(false)))
+        run_in(sessions, source, opts, &tx, &notify, &Arc::default())
     }
 
     /// Einträge direkt unter `dir`, sortiert.

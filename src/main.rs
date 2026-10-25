@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
                 &opts,
                 &tx,
                 &notify,
-                Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
             );
             // Nicht auf `printer` warten: whisper-rs gibt den Fortschritts-Callback (mit einer Sender-Kopie)
             // nicht frei, der Kanal schließt also nie. Der Thread endet mit dem Prozess.
