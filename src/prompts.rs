@@ -1,5 +1,5 @@
 //! Der Zusammenfassungs-Prompt ist in die App eingebaut (`prompts/summary.md`) und lässt sich zum Testen
-//! überschreiben: im Dev-Modus über den Editor, oder per Datei `summary.md` in `<config_dir>/prompts/`
+//! überschreiben: im Admin-Modus über den Editor, oder per Datei `summary.md` in `<config_dir>/prompts/`
 //! bzw. `$TUTO_MIC_PROMPTS`.
 
 use anyhow::{Context, Result};

@@ -33,7 +33,7 @@ fn check_abort(abort: &AtomicBool) -> Result<()> {
     Ok(())
 }
 
-/// Dateiendungen, die als Audio importiert werden (Dateidialog im Dev-Modus).
+/// Dateiendungen, die als Audio importiert werden (Dateidialog im Admin-Modus).
 pub const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "flac", "ogg", "m4a", "opus"];
 /// Dateiendungen, die als fertiges Text-Transkript importiert werden.
 pub const TRANSCRIPT_EXTENSIONS: &[&str] = &["txt", "md"];
@@ -44,7 +44,7 @@ pub const IMPORT_EXTENSIONS: [&str; 8] = ["mp3", "wav", "flac", "ogg", "m4a", "o
 pub enum Source {
     /// Aufnahme-Session mit Segmenten in `audio/`.
     Session(PathBuf),
-    /// Importierte Audiodatei (Dev-Modus / CLI).
+    /// Importierte Audiodatei (Admin-Modus / CLI).
     File(PathBuf),
     /// Importiertes Text-Transkript (UTF-8), z. B. Demo-Daten oder zum Prompt-Testen: kein Audio, kein Whisper.
     Transcript(PathBuf),
@@ -74,7 +74,7 @@ pub struct Options {
     pub cfg: Config,
     pub summary_prompt: String,
     pub skip_llm: bool,
-    /// Original-Transkript mit Klarnamen als `transcript.txt` behalten (nur Dev-Modus/CLI).
+    /// Original-Transkript mit Klarnamen als `transcript.txt` behalten (nur Admin-Modus/CLI).
     pub keep_original_transcript: bool,
 }
 

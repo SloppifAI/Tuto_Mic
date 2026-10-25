@@ -32,8 +32,33 @@ struct NewLessonForm {
     open: bool,
     class_id: Option<u64>,
     subject: String,
+    /// Fach frei eingeben statt aus der Liste wählen.
+    custom_subject: bool,
     topic: String,
 }
+
+/// Gängige Schulfächer als Vorschläge. In Tuto ist das Fach Freitext, daher bleibt „Anderes Fach …“ möglich.
+const COMMON_SUBJECTS: &[&str] = &[
+    "Deutsch",
+    "Mathematik",
+    "Englisch",
+    "Französisch",
+    "Latein",
+    "Spanisch",
+    "Biologie",
+    "Chemie",
+    "Physik",
+    "Geschichte",
+    "Erdkunde",
+    "Politik",
+    "Wirtschaft",
+    "Religion",
+    "Ethik",
+    "Kunst",
+    "Musik",
+    "Sport",
+    "Informatik",
+];
 
 pub struct TutoPanel {
     session: Option<Session>,
@@ -51,6 +76,8 @@ pub struct TutoPanel {
     message: Option<(bool, String)>,
     /// Warum Rücksprünge über `tutoapp://` nicht ankommen können (z. B. Port durch eine zweite App belegt).
     listen_error: Option<String>,
+    /// Erfolgreich gesendete Stunde, bis die App sie mit [`TutoPanel::take_sent`] abholt.
+    sent: Option<Lesson>,
 }
 
 impl TutoPanel {
@@ -78,6 +105,16 @@ impl TutoPanel {
         }
     }
 
+    /// Liefert einmalig die Stunde, an die gerade erfolgreich gesendet wurde.
+    pub fn take_sent(&mut self) -> Option<Lesson> {
+        let sent = self.sent.take();
+        if sent.is_some() {
+            // Die App zeigt die Bestätigung selbst an.
+            self.message = None;
+        }
+        sent
+    }
+
     /// Ohne Listener und Schlüsselbund, z. B. für Tests und Bildschirmfotos.
     pub fn offline() -> Self {
         Self {
@@ -95,6 +132,7 @@ impl TutoPanel {
             confirm_overwrite: false,
             message: None,
             listen_error: None,
+            sent: None,
         }
     }
 
@@ -174,9 +212,10 @@ impl TutoPanel {
                         ),
                     ));
                     if let Some(l) = self.lessons.iter_mut().find(|l| l.id == lesson.id) {
-                        *l = lesson;
+                        l.clone_from(&lesson);
                     }
                     self.confirm_overwrite = false;
+                    self.sent = Some(lesson);
                 }
                 Event::Failed(e) => self.message = Some((false, e)),
                 Event::Disconnected => {
@@ -421,8 +460,21 @@ impl TutoPanel {
             });
             return;
         }
+        // Schon bei der Auswahl warnen, nicht erst beim Senden.
+        if let Some(lesson) = lesson.as_ref().filter(|l| l.summary.is_some() || l.released) {
+            warning(
+                ui,
+                if lesson.released {
+                    "Diese Stunde hat schon eine Zusammenfassung und die Hausaufgabe ist freigegeben. Beim Senden wird \
+                     sie ersetzt – die Schüler:innen sehen die neue Fassung sofort."
+                } else {
+                    "Diese Stunde hat schon eine Zusammenfassung. Beim Senden wird sie ersetzt."
+                },
+            );
+        }
         let label = match &lesson {
             Some(_) if too_long => "Zu lang zum Senden",
+            Some(l) if l.summary.is_some() || l.released => "Zusammenfassung ersetzen",
             Some(_) => "Zusammenfassung senden",
             None => "Erst eine Stunde wählen",
         };
@@ -479,8 +531,7 @@ impl TutoPanel {
                             .labelled_by(class_label.id);
                         ui.end_row();
                         let l = ui.label("Fach");
-                        ui.add(egui::TextEdit::singleline(&mut self.form.subject).hint_text("z. B. Mathematik"))
-                            .labelled_by(l.id);
+                        self.subject_picker(ui, l.id);
                         ui.end_row();
                         let l = ui.label("Thema");
                         ui.add(egui::TextEdit::singleline(&mut self.form.topic).hint_text("z. B. Prozentrechnung"))
@@ -514,6 +565,40 @@ impl TutoPanel {
             });
     }
 
+    /// Fach aus Vorschlägen wählen (gängige Fächer und die aus den eigenen Tuto-Stunden) oder frei eingeben.
+    fn subject_picker(&mut self, ui: &mut egui::Ui, label: egui::Id) {
+        let mut subjects: Vec<String> = self.lessons.iter().map(|l| l.subject.clone()).collect();
+        subjects.extend(COMMON_SUBJECTS.iter().map(|s| (*s).to_string()));
+        let mut seen = std::collections::HashSet::new();
+        subjects.retain(|s| seen.insert(s.to_lowercase()));
+
+        if self.form.custom_subject {
+            ui.add(egui::TextEdit::singleline(&mut self.form.subject).hint_text("Fach eingeben"))
+                .labelled_by(label);
+            return;
+        }
+        let shown = if self.form.subject.is_empty() {
+            "Fach wählen"
+        } else {
+            self.form.subject.as_str()
+        };
+        egui::ComboBox::from_id_salt("subject")
+            .selected_text(shown)
+            .height(320.0)
+            .show_ui(ui, |ui| {
+                for subject in &subjects {
+                    ui.selectable_value(&mut self.form.subject, subject.clone(), subject);
+                }
+                ui.separator();
+                if ui.selectable_label(false, "Anderes Fach …").clicked() {
+                    self.form.custom_subject = true;
+                    self.form.subject.clear();
+                }
+            })
+            .response
+            .labelled_by(label);
+    }
+
     fn send(&mut self, lesson_id: u64, summary: &str, ctx: &egui::Context) {
         let summary = summary.to_string();
         self.confirm_overwrite = false;
@@ -526,6 +611,23 @@ impl TutoPanel {
     }
 }
 
+/// Hinweis in Bernstein: Achtung, aber kein Fehler.
+fn warning(ui: &mut egui::Ui, text: &str) {
+    let (fill, fg) = if ui.visuals().dark_mode {
+        (Color32::from_rgb(0x45, 0x1a, 0x03), Color32::from_rgb(0xfc, 0xd3, 0x4d))
+    } else {
+        (Color32::from_rgb(0xff, 0xf7, 0xe6), theme::AMBER_700)
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(text).color(fg));
+        });
+}
+
 /// Auswählbare Zeile für eine Stunde: Klasse, Fach, Thema und Hinweis auf eine vorhandene Zusammenfassung.
 fn lesson_row(ui: &mut egui::Ui, lesson: &Lesson, selected: bool) -> egui::Response {
     let dark = ui.visuals().dark_mode;
@@ -535,7 +637,6 @@ fn lesson_row(ui: &mut egui::Ui, lesson: &Lesson, selected: bool) -> egui::Respo
         (false, false) => (Color32::WHITE, theme::SLATE_200),
         (false, true) => (theme::SLATE_900, theme::SLATE_800),
     };
-    let weak = theme::weak_text(ui);
     let response = egui::Frame::new()
         .fill(fill)
         .stroke(egui::Stroke::new(if selected { 2.0 } else { 1.0 }, stroke))
@@ -547,10 +648,12 @@ fn lesson_row(ui: &mut egui::Ui, lesson: &Lesson, selected: bool) -> egui::Respo
                 ui.label(RichText::new(&lesson.class.name).font(theme::heading(15.0)));
                 ui.label(format!("{}: {}", lesson.subject, lesson.topic));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let amber = Color32::from_rgb(0xff, 0xf7, 0xe6);
                     if lesson.released {
-                        ui.label(RichText::new("Hausaufgabe freigegeben").small().color(weak));
-                    } else if lesson.summary.is_some() {
-                        ui.label(RichText::new("hat Zusammenfassung").small().color(weak));
+                        theme::badge(ui, "Hausaufgabe freigegeben", theme::AMBER_700, amber);
+                    }
+                    if lesson.summary.is_some() {
+                        theme::badge(ui, "hat Zusammenfassung", theme::AMBER_700, amber);
                     }
                 });
             });
@@ -563,6 +666,19 @@ fn lesson_row(ui: &mut egui::Ui, lesson: &Lesson, selected: bool) -> egui::Respo
 
 #[cfg(test)]
 impl TutoPanel {
+    /// Wie [`Self::demo_connected`], mit geöffnetem Formular „Neue Stunde“.
+    pub fn demo_new_lesson(lessons: Vec<Lesson>) -> Self {
+        let mut panel = Self::demo_connected(lessons, None);
+        panel.form = NewLessonForm {
+            open: true,
+            class_id: Some(3),
+            subject: "Mathematik".into(),
+            custom_subject: false,
+            topic: String::new(),
+        };
+        panel
+    }
+
     /// Zustand „verbunden, Stunden geladen“ für Bildschirmfotos.
     pub fn demo_connected(lessons: Vec<Lesson>, selected: Option<u64>) -> Self {
         Self {

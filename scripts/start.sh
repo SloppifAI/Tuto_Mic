@@ -3,7 +3,7 @@
 # So stören halbfertige Änderungen im Arbeitsverzeichnis den Start nicht, und es gibt keine Wartezeit durch
 # gesperrte Build-Verzeichnisse. Erster Start: einmalig ca. 10 min (whisper.cpp), danach Sekunden.
 #
-#   scripts/start.sh --dev        # mit Prompt-Editor und Rohdaten
+#   scripts/start.sh --admin      # mit Einstellungen, Prompt-Editor und Rohdaten
 #   scripts/start.sh info         # jeder andere tuto-mic-Befehl geht auch
 set -euo pipefail
 

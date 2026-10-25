@@ -14,7 +14,7 @@ cargo fmt                                    # Formatierung (rustfmt.toml)
 cargo deny check                             # Sicherheitslücken, Lizenzen (deny.toml)
 cargo machete                                # ungenutzte Abhängigkeiten
 cargo test ui_preview -- --ignored           # alle GUI-Zustände als PNG nach target/ui-preview/ (braucht GPU)
-cargo app --dev                              # App (Release-Build, Whisper per Vulkan/Metal auf der GPU)
+cargo app --admin                              # App (Release-Build, Whisper per Vulkan/Metal auf der GPU)
 cargo app info                               # zeigt, ob Whisper die GPU findet
 ```
 

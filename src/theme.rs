@@ -27,6 +27,7 @@ pub const SLATE_950: Color32 = Color32::from_rgb(0x02, 0x06, 0x18);
 /// Statusfarben wie in Tuto: Erfolg Emerald, Warnung Amber, Fehler Rose. Immer zusammen mit Text verwenden.
 pub const EMERALD_600: Color32 = Color32::from_rgb(0x00, 0x96, 0x6a);
 pub const AMBER_600: Color32 = Color32::from_rgb(0xd9, 0x77, 0x06);
+pub const AMBER_700: Color32 = Color32::from_rgb(0xb4, 0x53, 0x09);
 pub const ROSE_600: Color32 = Color32::from_rgb(0xe1, 0x1d, 0x48);
 pub const ROSE_50: Color32 = Color32::from_rgb(0xff, 0xf1, 0xf2);
 

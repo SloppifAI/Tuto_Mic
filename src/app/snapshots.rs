@@ -198,6 +198,37 @@ fn ui_preview() {
         TutoMicApp::draw,
     );
     page(
+        "10-ueberschreiben",
+        false,
+        |ctx| {
+            app(
+                ctx,
+                TutoPanel::demo_connected(lessons(), Some(13)),
+                Some(outcome()),
+                true,
+            )
+        },
+        TutoMicApp::draw,
+    );
+    page(
+        "11-neue-stunde",
+        false,
+        |ctx| app(ctx, TutoPanel::demo_new_lesson(lessons()), Some(outcome()), true),
+        TutoMicApp::draw,
+    );
+    page(
+        "12-gesendet",
+        false,
+        |ctx| {
+            let mut a = app(ctx, TutoPanel::demo_connected(lessons(), None), None, true);
+            a.success = Some(
+                "In Tuto gespeichert: Mathematik, 7b, 25.10.2026. Die Daten auf diesem Rechner wurden gelöscht.".into(),
+            );
+            a
+        },
+        TutoMicApp::draw,
+    );
+    page(
         "09-bereit-dunkel",
         true,
         |ctx| app(ctx, TutoPanel::offline(), None, true),

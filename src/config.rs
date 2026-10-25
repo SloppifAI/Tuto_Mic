@@ -30,6 +30,10 @@ pub const ENV_VARS: &[(&str, &str)] = &[
         "TUTO_MIC_DELETE_AUDIO",
         "Audio nach der Transkription löschen (true/false)",
     ),
+    (
+        "TUTO_MIC_KEEP_SESSIONS",
+        "Daten nach dem Senden an Tuto behalten (true/false)",
+    ),
     ("TUTO_MIC_CLASS_LIST", "Klassenliste, Namen mit ; getrennt"),
 ];
 
@@ -50,6 +54,8 @@ pub struct Config {
     /// Länge der Aufnahme-Segmente. Bestimmt die Genauigkeit von "letzte X min löschen".
     pub segment_secs: u32,
     pub delete_audio_after_transcription: bool,
+    /// Nach erfolgreichem Senden an Tuto die lokale Sitzung (Transkripte, Zusammenfassung) behalten. Standard: löschen.
+    pub keep_sessions_after_upload: bool,
     /// Namen der Klasse (eine Person pro Eintrag, "Vorname Nachname") für die Pseudonymisierung.
     pub class_list: Vec<String>,
 }
@@ -67,6 +73,7 @@ impl Default for Config {
             summary_limit: 16383,
             segment_secs: 10,
             delete_audio_after_transcription: true,
+            keep_sessions_after_upload: false,
             class_list: Vec::new(),
         }
     }
@@ -85,6 +92,14 @@ impl Config {
         let mut cfg = Self::load_from(&Self::path())?;
         cfg.apply_env(|name| std::env::var(name).ok())?;
         Ok(cfg)
+    }
+
+    /// Schreibt die Datei (nur aus dem Admin-Modus). Umgebungsvariablen haben beim nächsten Laden weiter Vorrang.
+    pub fn save(&self) -> Result<()> {
+        let path = Self::path();
+        std::fs::create_dir_all(path.parent().expect("Konfigurationspfad liegt in einem Verzeichnis"))?;
+        std::fs::write(&path, serde_json::to_string_pretty(self)?)
+            .with_context(|| format!("Konfiguration nicht schreibbar: {}", path.display()))
     }
 
     /// Überschreibt Werte aus `TUTO_MIC_*`-Variablen (`get` liefert den Wert einer Variable).
@@ -106,6 +121,7 @@ impl Config {
                 "TUTO_MIC_WHISPER_MODEL" => self.whisper_model = value.into(),
                 "TUTO_MIC_VAD_MODEL" => self.vad_model = value.into(),
                 "TUTO_MIC_DELETE_AUDIO" => self.delete_audio_after_transcription = parse(name, &value)?,
+                "TUTO_MIC_KEEP_SESSIONS" => self.keep_sessions_after_upload = parse(name, &value)?,
                 "TUTO_MIC_CLASS_LIST" => self.class_list = parse_class_list(&value.replace(';', "\n")),
                 _ => unreachable!("jede Variable aus ENV_VARS hat einen Zweig"),
             }

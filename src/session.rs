@@ -32,6 +32,21 @@ pub fn audio_dir(session: &Path) -> PathBuf {
     session.join("audio")
 }
 
+/// Löscht eine Sitzung samt Transkripten und Zusammenfassung. Nur Verzeichnisse unter `sessions_dir()` – ein
+/// falscher Pfad darf nie zu einem Löschen anderswo führen.
+pub fn delete(dir: &Path) -> Result<()> {
+    delete_in(&sessions_dir(), dir)
+}
+
+fn delete_in(sessions: &Path, dir: &Path) -> Result<()> {
+    anyhow::ensure!(
+        dir.parent() == Some(sessions) && dir.file_name().is_some(),
+        "Kein Sitzungsverzeichnis: {}",
+        dir.display()
+    );
+    std::fs::remove_dir_all(dir).with_context(|| format!("Sitzung nicht löschbar: {}", dir.display()))
+}
+
 /// Zeitstempel plus optionaler Bezeichnung, auf dateisystemtaugliche Zeichen reduziert.
 fn dir_name(now: DateTime<Local>, label: Option<&str>) -> String {
     let stamp = now.format("%Y-%m-%d_%H-%M-%S");
@@ -51,6 +66,21 @@ fn dir_name(now: DateTime<Local>, label: Option<&str>) -> String {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn deletes_only_session_directories() {
+        let sessions = tempfile::tempdir().unwrap();
+        let session = sessions.path().join("2026-10-25_08-05-00");
+        std::fs::create_dir_all(session.join("audio")).unwrap();
+        std::fs::write(session.join("summary.md"), "x").unwrap();
+        delete_in(sessions.path(), &session).unwrap();
+        assert!(!session.exists());
+
+        // Alles außerhalb des Sitzungsordners wird verweigert.
+        assert!(delete_in(sessions.path(), sessions.path()).is_err());
+        assert!(delete_in(sessions.path(), Path::new("/tmp")).is_err());
+        assert!(sessions.path().exists());
+    }
 
     #[test]
     fn dir_name_is_filesystem_safe() {

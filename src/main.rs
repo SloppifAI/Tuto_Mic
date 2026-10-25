@@ -8,9 +8,9 @@ use tuto_mic::{app, config, deeplink, gpu, models, pipeline, prompts, session, t
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// Dev-Modus: Prompt-Editor, Datei-Import, Original-Transkript (auch per `TUTO_MIC_DEV=1`).
-    #[arg(long)]
-    dev: bool,
+    /// Admin-Modus: Einstellungen, Prompt-Editor, Datei-Import, Original-Transkript (auch per `TUTO_MIC_ADMIN=1`).
+    #[arg(long, alias = "dev")]
+    admin: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -57,7 +57,10 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let cli = Cli::parse();
-    let dev = cli.dev || std::env::var("TUTO_MIC_DEV").is_ok_and(|v| v == "1");
+    let admin = cli.admin
+        || ["TUTO_MIC_ADMIN", "TUTO_MIC_DEV"]
+            .iter()
+            .any(|v| std::env::var(v).is_ok_and(|v| v == "1"));
 
     match cli.cmd {
         None => {
@@ -73,7 +76,7 @@ fn main() -> anyhow::Result<()> {
             eframe::run_native(
                 "Tuto Mic",
                 options,
-                Box::new(move |cc| Ok(Box::new(app::TutoMicApp::new(&cc.egui_ctx, app::Mode { dev })))),
+                Box::new(move |cc| Ok(Box::new(app::TutoMicApp::new(&cc.egui_ctx, app::Mode { admin })))),
             )
             .map_err(|e| anyhow::anyhow!("GUI-Fehler: {e}"))
         }

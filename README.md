@@ -21,14 +21,14 @@ Mikrofon ──► Segmente (10 s, 16 kHz) ──► Whisper (lokal) ──► P
 - **Zusammenfassung** über ein lokales Ollama-Modell
 - **Audio wird nach der Transkription gelöscht** (abschaltbar)
 - **Export-Paket** `export.json`: pseudonymisiertes Transkript + Zusammenfassung für die spätere Aufgabenerstellung
-- **Dev-Modus** (`--dev` oder `TUTO_MIC_DEV=1`): Prompt-Editor, Audiodatei oder Text-Transkript importieren,
+- **Admin-Modus** (`--admin` oder `TUTO_MIC_DEV=1`): Prompt-Editor, Audiodatei oder Text-Transkript importieren,
   Original-Transkript, Log
 
 ## Nutzung
 
 ```sh
 tuto-mic                 # GUI
-tuto-mic --dev           # GUI mit Dev-Modus
+tuto-mic --admin         # GUI mit Admin-Menü: Einstellungen, Prompt, Transkript/Log, Datei-Import
 tuto-mic download        # Whisper- und VAD-Modell laden (~550 MB, alternativ per Button in der GUI)
 tuto-mic process stunde.mp3 [--no-llm]   # ohne GUI, z. B. zum Prompt-Testen
 tuto-mic process stunde.txt              # fertiges Transkript: ohne Whisper direkt pseudonymisieren und zusammenfassen
@@ -76,7 +76,7 @@ z. B. `ollama pull qwen3.5:9b`. Ohne Ollama werden Transkript und pseudonymisier
 
 Der Zusammenfassungs-Prompt `prompts/summary.md` ist in die App eingebaut. Zum Testen lässt er sich überschreiben:
 
-- im Dev-Modus über den Tab **Prompts** (speichert nach `<config>/prompts/`), oder
+- im Admin-Modus über den Tab **Prompts** (speichert nach `<config>/prompts/`), oder
 - per Verzeichnis: `TUTO_MIC_PROMPTS=./meine-prompts tuto-mic process stunde.mp3`
   (Datei `summary.md`; fehlt sie, gilt die eingebaute Version).
 
@@ -91,7 +91,7 @@ Mit direnv lädt `.envrc` die Umgebung automatisch, auch für den Editor (`diren
 ```sh
 nix develop                  # Standard: Whisper auf der GPU per Vulkan
 nix develop .#cuda           # zusätzlich CUDA, dann: cargo run --release --features cuda
-cargo run -- --dev
+cargo run -- --admin
 ```
 
 Qualitätsprüfungen (laufen auch in der CI):

@@ -1,7 +1,7 @@
 //! Die Seite für Lehrkräfte: je nach Zustand Start, laufende Aufnahme, Auswertung oder Ergebnis. Die einzelnen
 //! Karten sind freie Funktionen mit einfachen Eingaben, damit sie sich ohne Mikrofon testen lassen.
 
-use super::{DeleteLast, Download, TutoMicApp, open_path, stage_of};
+use super::{DeleteLast, Download, TutoMicApp, stage_of};
 use crate::control::{Command, RecState};
 use crate::icons::{self, Icon};
 use crate::theme::{self, BLUE_600, EMERALD_600, ROSE_50, ROSE_600};
@@ -32,6 +32,11 @@ impl TutoMicApp {
             && message_card(ui, &e, true)
         {
             self.error = None;
+        }
+        if let Some(s) = self.success.clone()
+            && success_card(ui, &s)
+        {
+            self.success = None;
         }
         if let Some(n) = self.notice.clone()
             && message_card(ui, &n, false)
@@ -80,7 +85,7 @@ impl TutoMicApp {
             }
         }
 
-        if self.mode.dev && state == RecState::Idle {
+        if self.mode.admin && state == RecState::Idle {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Entwicklung:").color(theme::weak_text(ui)));
@@ -167,21 +172,48 @@ impl TutoMicApp {
         });
         ui.add_space(16.0);
         let summary = outcome.summary.clone();
-        let dir = outcome.dir.clone();
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             self.tuto.ui_send(ui, &self.cfg, summary.as_deref());
         });
         ui.add_space(16.0);
-        ui.horizontal(|ui| {
-            if ui.button("Neue Aufnahme").clicked() {
-                self.outcome = None;
-            }
-            if self.mode.dev && ui.button("Ordner öffnen").clicked() {
-                open_path(&dir);
-            }
-        });
+        if ui.button("Neue Aufnahme").clicked() {
+            self.outcome = None;
+        }
     }
+}
+
+/// Grüne Bestätigung mit „OK“. Liefert `true`, wenn sie geschlossen wurde.
+fn success_card(ui: &mut egui::Ui, text: &str) -> bool {
+    let mut closed = false;
+    egui::Frame::new()
+        .fill(if ui.visuals().dark_mode {
+            Color32::from_rgb(0x02, 0x2c, 0x22)
+        } else {
+            Color32::from_rgb(0xec, 0xfd, 0xf5)
+        })
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::symmetric(16, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), Sense::hover());
+                ui.painter().circle_filled(dot.center(), 9.0, EMERALD_600);
+                let c = dot.center();
+                let tick = vec![c + vec2(-4.0, 0.0), c + vec2(-1.0, 3.0), c + vec2(4.5, -3.5)];
+                ui.painter().line(tick, Stroke::new(2.0, Color32::WHITE));
+                // Platz für den Knopf rechts frei lassen, sonst läuft der umbrochene Text darunter.
+                let width = (ui.available_width() - 90.0).max(100.0);
+                ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
+                    ui.add(egui::Label::new(RichText::new(text).color(EMERALD_600)).wrap());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    closed = ui.button("OK").clicked();
+                });
+            });
+        });
+    ui.add_space(12.0);
+    closed
 }
 
 /// Fehler- oder Hinweiskarte mit „Schließen“. Liefert `true`, wenn sie geschlossen wurde.
@@ -206,7 +238,11 @@ fn message_card(ui: &mut egui::Ui, text: &str, error: bool) -> bool {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                // Platz für den Knopf rechts frei lassen, sonst läuft der umbrochene Text darunter.
+                let width = (ui.available_width() - 90.0).max(100.0);
+                ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
+                    ui.add(egui::Label::new(RichText::new(text).color(fg)).wrap());
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     closed = ui.small_button("Schließen").clicked();
                 });

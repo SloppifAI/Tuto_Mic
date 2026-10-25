@@ -1,8 +1,8 @@
 //! Desktop-Oberfläche. Für Lehrkräfte gibt es genau einen Ablauf auf einer Seite: aufnehmen → auswerten →
-//! Zusammenfassung prüfen → an Tuto senden. Einstellungen gibt es nicht in der GUI (zentral per Datei oder
-//! Umgebungsvariablen, siehe `config`); Prompt-Editor und Rohdaten nur im Dev-Modus.
+//! Zusammenfassung prüfen → an Tuto senden. Einstellungen, Prompt-Editor und Rohdaten gibt es nur im
+//! Admin-Modus (`--admin`); sonst gelten die zentralen Vorgaben (Datei oder Umgebungsvariablen, siehe `config`).
 
-mod dev;
+mod admin;
 mod screens;
 
 use crate::config::Config;
@@ -23,6 +23,7 @@ use std::time::Duration;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Main,
+    Settings,
     Prompts,
     Details,
 }
@@ -51,8 +52,8 @@ struct DeleteLast {
 /// Wie die App gestartet wurde.
 #[derive(Clone, Copy, Default)]
 pub struct Mode {
-    /// Zusätzlich Prompt-Editor, Datei-Import, Original-Transkript und Log.
-    pub dev: bool,
+    /// Admin-Menü: Einstellungen, Prompt-Editor, Datei-Import, Original-Transkript und Log.
+    pub admin: bool,
 }
 
 pub struct TutoMicApp {
@@ -66,10 +67,12 @@ pub struct TutoMicApp {
     error: Option<String>,
     /// Hinweis ohne Fehlercharakter, z. B. nach einem Abbruch.
     notice: Option<String>,
+    /// Bestätigung nach dem Senden an Tuto.
+    success: Option<String>,
     delete: DeleteLast,
     download: Option<Download>,
     tuto: TutoPanel,
-    dev: dev::DevState,
+    admin: admin::AdminState,
     /// Zuletzt angezeigter Aufnahmefehler, damit „Schließen“ ihn nicht im nächsten Frame wieder öffnet.
     rec_error_seen: Option<String>,
 }
@@ -85,7 +88,7 @@ impl TutoMicApp {
             ),
         };
         Self {
-            dev: dev::DevState::new(),
+            admin: admin::AdminState::new(&cfg),
             cfg,
             mode,
             page: Page::Main,
@@ -95,6 +98,7 @@ impl TutoMicApp {
             outcome: None,
             error,
             notice: None,
+            success: None,
             delete: DeleteLast {
                 open: false,
                 minutes: 5,
@@ -111,7 +115,7 @@ impl TutoMicApp {
         theme::install(ctx);
         let cfg = Config::default();
         Self {
-            dev: dev::DevState::new(),
+            admin: admin::AdminState::new(&cfg),
             cfg,
             mode,
             page: Page::Main,
@@ -121,6 +125,7 @@ impl TutoMicApp {
             outcome: None,
             error: None,
             notice: None,
+            success: None,
             delete: DeleteLast {
                 open: false,
                 minutes: 5,
@@ -203,7 +208,7 @@ impl TutoMicApp {
             cfg: self.cfg.clone(),
             summary_prompt: prompts::load(),
             skip_llm: false,
-            keep_original_transcript: self.mode.dev,
+            keep_original_transcript: self.mode.admin,
         };
         let ctx = ctx.clone();
         pipeline::spawn(source, opts, tx, Arc::new(move || ctx.request_repaint()), abort.clone());
@@ -244,6 +249,26 @@ impl TutoMicApp {
         {
             self.download = Some(Download::Finished(res.unwrap_or_else(|e| format!("Fehler: {e}"))));
         }
+    }
+
+    /// Nach erfolgreichem Senden: lokale Daten der Stunde löschen (Datenschutz), außer der Admin hat es abgeschaltet.
+    fn after_upload(&mut self, lesson: &crate::tuto::Lesson) {
+        let mut text = format!(
+            "In Tuto gespeichert: {}, {}, {}.",
+            lesson.subject,
+            lesson.class.name,
+            lesson.held_on.format("%d.%m.%Y")
+        );
+        if let Some(outcome) = self.outcome.take() {
+            if self.cfg.keep_sessions_after_upload {
+                text.push_str(" Die lokalen Daten bleiben erhalten (Einstellung).");
+            } else if let Err(e) = session::delete(&outcome.dir) {
+                self.error = Some(format!("{e:#}"));
+            } else {
+                text.push_str(" Die Daten auf diesem Rechner wurden gelöscht.");
+            }
+        }
+        self.success = Some(text);
     }
 
     fn models_missing(&self) -> bool {
@@ -309,11 +334,11 @@ impl TutoMicApp {
                         theme::BLUE_600
                     }),
             );
-            if self.mode.dev {
-                theme::badge(ui, "DEV", theme::AMBER_600, theme::ROSE_50);
+            if self.mode.admin {
+                theme::badge(ui, "Admin", theme::AMBER_600, theme::ROSE_50);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.mode.dev {
+                if self.mode.admin {
                     ui.menu_button("Menü", |ui| {
                         let mut go = |ui: &mut egui::Ui, page, label: &str| {
                             if ui.button(label).clicked() {
@@ -322,6 +347,7 @@ impl TutoMicApp {
                             }
                         };
                         go(ui, Page::Main, "Aufnahme");
+                        go(ui, Page::Settings, "Einstellungen");
                         go(ui, Page::Prompts, "Prompt");
                         go(ui, Page::Details, "Transkript und Log");
                     });
@@ -337,6 +363,7 @@ impl TutoMicApp {
     fn draw(&mut self, ui: &mut egui::Ui) {
         self.draw_frame(ui, |app, ui| match app.page {
             Page::Main => app.main_page(ui),
+            Page::Settings => app.settings_page(ui),
             Page::Prompts => app.prompts_page(ui),
             Page::Details => app.details_page(ui),
         });
@@ -365,6 +392,9 @@ impl eframe::App for TutoMicApp {
         let ctx = ui.ctx().clone();
         self.poll();
         self.tuto.update(&ctx);
+        if let Some(lesson) = self.tuto.take_sent() {
+            self.after_upload(&lesson);
+        }
         if let Some((rec, _)) = &self.recorder {
             if let Some(e) = rec.error()
                 && self.rec_error_seen.as_ref() != Some(&e)
