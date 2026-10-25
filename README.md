@@ -80,8 +80,9 @@ Zusammenfassung fehlt.
   Inhalte („der mit dem gebrochenen Arm“) können Personen erkennbar machen. Ein echter Schuleinsatz braucht
   eine Rechtsgrundlage bzw. Einwilligungen für die Aufnahme, eine Datenschutz-Folgenabschätzung und für Tuto
   einen Auftragsverarbeitungsvertrag.
-- **Ohne Klassenliste keine Schülernamen-Ersetzung.** Die Liste wird heute lokal gepflegt (`config.json`,
-  Umgebungsvariable oder Admin-Modus), nicht aus Tuto übernommen. Fehlt sie, warnt das Log. Namen, die nicht
+- **Ohne Klassenliste keine Schülernamen-Ersetzung.** Die Liste kommt aus der lokalen Konfiguration (`config.json`,
+  Umgebungsvariable oder Admin-Modus) und – sobald Tuto `GET /api/v1/roster` anbietet – zusätzlich aus Tuto
+  (Klassen der Lehrkraft inkl. Vertretung, nur im Arbeitsspeicher; die App ist dafür vorbereitet). Fehlt sie, warnt das Log. Namen, die nicht
   auf der Liste stehen (z. B. Geschwister, andere Klassen), werden nicht erkannt.
 - **Lokale Daten sind unverschlüsselt.** Audio-Stücke (während der Aufnahme) sowie pseudonymisiertes Transkript
   und Zusammenfassung (bis zum Senden) liegen im Klartext im Benutzerprofil. Eine Verschlüsselung ist in Arbeit;

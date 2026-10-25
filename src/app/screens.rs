@@ -88,7 +88,7 @@ impl TutoMicApp {
         if self.mode.admin && state == RecState::Idle {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Entwicklung:").color(theme::weak_text(ui)));
+                ui.label(RichText::new("Admin:").color(theme::weak_text(ui)));
                 if ui.button("Audio- oder Textdatei verarbeiten …").clicked() {
                     self.import_file(&ctx);
                 }

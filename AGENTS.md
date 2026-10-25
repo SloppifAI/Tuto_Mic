@@ -49,7 +49,7 @@ dasselbe plus `deny` und `machete`.
   Mutex: `.lock().unwrap_or_else(PoisonError::into_inner)`.
 - Lints in `Cargo.toml` nicht lockern. Einzelne Ausnahmen mit `#[expect(clippy::…, reason = "…")]`.
 - Logik gehört in die Bibliothek (`src/lib.rs`), nicht in `main.rs` oder die GUI, damit sie ohne Fenster
-  testbar bleibt. `src/app.rs` ruft nur auf und zeigt an.
+  testbar bleibt. `src/app/` ruft nur auf und zeigt an.
 - GUI-Änderungen mit `cargo test ui_preview -- --ignored` ansehen, bevor jemand die App startet. Jedes
   Bedienelement braucht einen zugänglichen Namen (die Vorschau prüft das).
 - egui-Schriften enthalten keine Symbole (●, ▶, ⚠, →, …): Icons über `src/icons.rs` zeichnen, sonst Text.
@@ -71,4 +71,4 @@ ureq 3). Vor der Nutzung die Version in `Cargo.toml` prüfen und im Zweifel den 
 
 `prompts/summary.md` ist der Zusammenfassungs-Prompt des Teams, mit dem bereits getestet wurde. Den Kern
 (Regeln 1–3, Gliederung) beibehalten. `{{TRANSKRIPT}}` markiert die Stelle für das Transkript. Tuto nimmt
-Zusammenfassungen bis 5000 Zeichen an.
+Zusammenfassungen bis zur konfigurierten Höchstlänge an (Standard 16383 Zeichen).
