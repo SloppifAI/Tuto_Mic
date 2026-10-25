@@ -43,7 +43,12 @@ flowchart LR
    „Letzte Minuten verwerfen“ löscht rückwirkend 1, 2, 5, 10, 15 oder 30 Minuten, z. B. nach einem privaten Gespräch. Das Audio
    wird in 10-Sekunden-Stücken (16 kHz) gespeichert.
 2. **Mitschreiben.** whisper.cpp (Modell large-v3-turbo, mit Silero-VAD gegen erfundenen Text in Sprechpausen)
-   transkribiert auf der GPU, ohne Internet. Danach wird das Audio gelöscht.
+   transkribiert auf der GPU, ohne Internet. Das läuft schon während der Aufnahme in Abschnitten von etwa
+   30–60 s, geschnitten an Sprechpausen; nach „Beenden und auswerten“ fehlt nur noch der letzte Rest (meist
+   wenige Sekunden). Den Text zeigt die App dabei nicht an – der Bildschirm im Klassenraum ist oft für alle
+   sichtbar –, nur „Mitgeschrieben: 12:30 von 14:05“. „Letzte Minuten verwerfen“ verwirft auch den Text dieser
+   Minuten. Geht beim Mitschreiben etwas schief, wird nach der Aufnahme wie früher alles am Stück transkribiert.
+   Danach wird das Audio gelöscht.
 3. **Namen entfernen.** Deterministischer Code ersetzt Namen und Kontaktdaten durch Platzhalter wie
    `[Schüler A]`, `[Lehrkraft]`, `[E-Mail]` (Details unten).
 4. **Zusammenfassen.** Ein lokales Modell über Ollama (Standard `qwen3.5:9b`) erstellt mit dem Prompt aus
@@ -64,6 +69,7 @@ Zusammenfassung fehlt.
 |---|---|
 | Verarbeitung auf dem Rechner | Spracherkennung (whisper.cpp) und Zusammenfassung (Ollama, Standard `http://localhost:11434`) laufen lokal. Internet braucht es nur für den einmaligen Modell-Download und für Tuto. |
 | Audio nur so lange wie nötig | Nach der Transkription wird der Audio-Ordner gelöscht (`pipeline.rs`). Bei abgebrochener Auswertung bleibt er erhalten, damit die Stunde nicht verloren ist. Keine Stimmprofile, keine Sprechererkennung. |
+| Mitschrift während der Aufnahme | Der Text entsteht nur im Arbeitsspeicher (keine zusätzliche Datei, auch kein Audio: die Segmente gehen im Speicher an die Mitschrift) und wird nicht angezeigt, nur der Fortschritt. „Letzte Minuten verwerfen“ verwirft auch den mitgeschriebenen Text dieser Minuten (`live.rs`). |
 | Pseudonymisierung vor jedem KI-Schritt | Regeln in Code statt Anweisung an das Modell (`anonymize.rs`) – lokale Modelle gaben im Test Namen trotz Verbot im Prompt aus. |
 | – Klassenliste | Voller Name, Vor- und Nachname einzeln (auch mit Genitiv-s), jede Person ein festes Kürzel (`[Schüler A]`). Teilen sich zwei Personen einen Namensteil, wird er zu `[Schüler]` statt falsch zugeordnet. |
 | – Unscharfer Abgleich | Von Whisper falsch geschriebene Namen („Müler“ statt „Müller“) werden über Kölner Phonetik **und** Jaro-Winkler-Ähnlichkeit ≥ 0,9 erkannt; nur großgeschriebene Wörter ab 4 Buchstaben, damit gewöhnliche Wörter stehen bleiben. Die Namen der Klassenliste gehen außerdem als Hinweis an Whisper, damit sie öfter richtig geschrieben werden. |
@@ -167,6 +173,7 @@ Klassenliste verloren).
 | `TUTO_MIC_VAD_MODEL` | `vad_model` | Pfad zum VAD-Modell | im Datenverzeichnis |
 | `TUTO_MIC_DELETE_AUDIO` | `delete_audio_after_transcription` | Audio nach der Transkription löschen | `true` |
 | `TUTO_MIC_KEEP_SESSIONS` | `keep_sessions_after_upload` | Daten nach dem Senden an Tuto behalten | `false` |
+| `TUTO_MIC_LIVE_TRANSCRIPTION` | `live_transcription` | Schon während der Aufnahme transkribieren (sonst erst danach, am Stück) | `true` |
 | `TUTO_MIC_CLASS_LIST` | `class_list` | Klassenliste; Variable: Namen mit `;` getrennt, Datei: Liste | leer |
 
 Nur in der Datei: `num_ctx` (Kontextlänge für Ollama, `32768`) und `segment_secs` (Länge der Audio-Stücke,
@@ -243,6 +250,7 @@ cargo app --admin            # App als Release-Build starten (Alias aus .cargo/c
 cargo app info               # zeigt, ob Whisper die GPU findet
 cargo app process stunde.mp3 [--no-llm]   # ohne GUI, z. B. zum Prompt-Testen
 cargo app process stunde.txt              # fertiges Transkript (.txt/.md): ohne Whisper
+cargo app simulate-live stunde.mp3 [--speed 4] [--delete 100:45] [--compare]   # Mitschrift nachstellen, Zeitmessung
 ```
 
 Ohne Nix: Rust (stable), cmake, clang/libclang; unter Linux zusätzlich
@@ -274,7 +282,9 @@ ersetzt `{{TRANSKRIPT}}`; fehlt der Platzhalter, wird es angehängt.
 
 Whisper nutzt die GPU ohne Feature-Flag: Vulkan unter Linux/Windows, Metal unter macOS; optional
 `--features cuda`. Messung (RTX 3080 Laptop, large-v3-turbo): 33 min Unterricht mit Vulkan in 64 s, mit CUDA
-in etwa 66 s; 2,5 min Audio auf der CPU nach 16 min erst zu 31 % fertig.
+in etwa 66 s; 2,5 min Audio auf der CPU nach 16 min erst zu 31 % fertig. Mitschrift während der Aufnahme
+(`tuto-mic simulate-live clip.mp3`, Debug-Build, Vulkan): 2,5 min Audio in Echtzeit eingespielt, 5 Abschnitte
+zu je 1–2 s Rechenzeit, nach dem Ende noch 0,7 s statt 4,5 s am Stück.
 
 ### CI und Release
 
@@ -301,6 +311,7 @@ Offen: Signierung (Windows-Code-Signing, macOS-Notarisierung), Installer, `.app`
 | `src/deeplink.rs` | `tutoapp://`-Links registrieren und an die laufende App weitergeben |
 | `src/control.rs` | Befehle (Start/Pause/Stop/Löschen) und Aufnahmezustand – Schnittstelle für einen späteren Hardware-Taster |
 | `src/recorder.rs` | Mikrofon (cpal), Resampling, Segment-Dateien, rückwirkendes Löschen |
+| `src/live.rs` | Mitschrift während der Aufnahme: Abschnitte an Sprechpausen, Buchführung bei Löschungen, Rückfall auf die vollständige Transkription |
 | `src/audio.rs` | Audio laden/dekodieren (symphonia), Resampling auf 16 kHz (rubato) |
 | `src/transcribe.rs` | whisper.cpp über whisper-rs, Klassenliste als Hinweis |
 | `src/gpu.rs` | Whisper-Backend (Vulkan/Metal/CUDA) und Wahl der GPU |

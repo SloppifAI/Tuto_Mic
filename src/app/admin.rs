@@ -140,6 +140,13 @@ impl TutoMicApp {
                     );
                     ui.end_row();
 
+                    ui.label("Mitschrift");
+                    ui.checkbox(
+                        &mut self.cfg.live_transcription,
+                        "Schon während der Aufnahme transkribieren (Auswertung danach schneller)",
+                    );
+                    ui.end_row();
+
                     ui.label("Datenschutz");
                     ui.checkbox(
                         &mut self.cfg.delete_audio_after_transcription,

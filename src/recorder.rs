@@ -10,6 +10,7 @@
 
 use crate::audio::{StreamResampler, WHISPER_RATE};
 use crate::crypt::{self, Key};
+use crate::live::Sink;
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -46,7 +47,8 @@ pub struct Recorder {
 
 impl Recorder {
     /// Startet die Aufnahme. Segmente werden mit `key` verschlüsselt (Schlüssel der Sitzung, nur im Speicher).
-    pub fn start(audio_dir: &Path, segment_secs: u32, key: Key) -> Result<Self> {
+    /// Mit `live` gehen abgeschlossene Segmente und Löschungen zusätzlich an die Mitschrift (siehe `live`).
+    pub fn start(audio_dir: &Path, segment_secs: u32, key: Key, live: Option<Sink>) -> Result<Self> {
         let host = cpal::default_host();
         let device = host.default_input_device().context("Kein Mikrofon gefunden")?;
         let device_name = device
@@ -65,7 +67,7 @@ impl Recorder {
             let shared = shared.clone();
             let segment_frames = u64::from(segment_secs.max(1) * WHISPER_RATE);
             std::thread::spawn(move || {
-                let res = writer_loop(rx, &dir, rate, segment_frames, &key, &shared);
+                let res = writer_loop(rx, &dir, rate, segment_frames, &key, &shared, live.as_ref());
                 if let Err(e) = &res {
                     *shared.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!("{e:#}"));
                 }
@@ -222,16 +224,23 @@ fn writer_loop(
     segment_frames: u64,
     key: &Key,
     shared: &Shared,
+    live: Option<&Sink>,
 ) -> Result<()> {
     let mut resampler = StreamResampler::new(rate)?;
     let mut done: Vec<Segment> = Vec::new();
     let mut open: Option<OpenSegment> = None;
     let mut next_index = 1u32;
     let mut buf = Vec::new();
+    let kept = |done: &[Segment]| done.iter().map(|s| s.frames).sum::<u64>();
 
     let close = |open: &mut Option<OpenSegment>, done: &mut Vec<Segment>| -> Result<()> {
         if let Some(o) = open.take() {
             write_segment(&o.path, &o.samples, key)?;
+            // Genau die gespeicherten Samples, damit Mitschrift und Segmente auf der Platte übereinstimmen.
+            if let Some(live) = live {
+                let samples = o.samples.iter().map(|&s| f32::from(s) / f32::from(i16::MAX)).collect();
+                live.audio(kept(done), samples);
+            }
             done.push(Segment {
                 path: o.path,
                 frames: o.samples.len() as u64,
@@ -273,11 +282,14 @@ fn writer_loop(
                     std::fs::remove_file(&seg.path)?;
                     remaining = remaining.saturating_sub(seg.frames);
                 }
+                if let Some(live) = live {
+                    live.truncate(kept(&done));
+                }
                 log::info!("{} s Aufnahme gelöscht", d.as_secs());
             }
             Msg::Finish => break,
         }
-        let total = done.iter().map(|s| s.frames).sum::<u64>() + open.as_ref().map_or(0, |o| o.samples.len() as u64);
+        let total = kept(&done) + open.as_ref().map_or(0, |o| o.samples.len() as u64);
         shared.recorded_frames.store(total, Ordering::Relaxed);
     }
     close(&mut open, &mut done)
@@ -300,13 +312,59 @@ mod tests {
 
     /// Schreib-Thread ohne Mikrofon: Samples kommen direkt mit 16 kHz, Segmente sind 1 s lang.
     fn start_writer(dir: &Path, key: &Key) -> (Sender<Msg>, Arc<Shared>, JoinHandle<Result<()>>) {
+        start_writer_with(dir, key, None)
+    }
+
+    fn start_writer_with(
+        dir: &Path,
+        key: &Key,
+        live: Option<Sink>,
+    ) -> (Sender<Msg>, Arc<Shared>, JoinHandle<Result<()>>) {
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared::default());
         let handle = {
             let (dir, shared, key) = (dir.to_path_buf(), shared.clone(), key.clone());
-            std::thread::spawn(move || writer_loop(rx, &dir, WHISPER_RATE, SECOND as u64, &key, &shared))
+            std::thread::spawn(move || writer_loop(rx, &dir, WHISPER_RATE, SECOND as u64, &key, &shared, live.as_ref()))
         };
         (tx, shared, handle)
+    }
+
+    #[test]
+    fn live_gets_closed_segments_and_deletions_in_recorded_positions() {
+        use crate::live::Event;
+        let dir = tempfile::tempdir().unwrap();
+        let key = Key::generate().unwrap();
+        let (sink, events) = crate::live::channel();
+        let (tx, _shared, handle) = start_writer_with(dir.path(), &key, Some(sink));
+        send_secs(&tx, 3.5);
+        // Offenes halbes Segment und ein volles weg → Aufnahme 2 s lang.
+        tx.send(Msg::DeleteLast(Duration::from_secs(1))).unwrap();
+        send_secs(&tx, 1.25);
+        tx.send(Msg::Finish).unwrap();
+        handle.join().unwrap().unwrap();
+
+        let got: Vec<String> = events
+            .iter()
+            .map(|e| match e {
+                Event::Audio { start, samples } => format!("audio {start}+{}", samples.len()),
+                Event::Truncate(len) => format!("truncate {len}"),
+            })
+            .collect();
+        let s = SECOND;
+        assert_eq!(
+            got,
+            [
+                format!("audio 0+{s}"),
+                format!("audio {s}+{s}"),
+                format!("audio {}+{s}", 2 * s),
+                format!("truncate {}", 2 * s),
+                format!("audio {}+{s}", 2 * s),
+                format!("audio {}+{}", 3 * s, s / 4),
+            ]
+        );
+        // Dieselben Werte wie in den verschlüsselten Segmenten.
+        let on_disk = crate::audio::load_segments(dir.path(), &key).unwrap();
+        assert_eq!(on_disk.len(), 3 * s + s / 4);
     }
 
     fn send_secs(tx: &Sender<Msg>, secs: f64) {

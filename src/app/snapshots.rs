@@ -3,8 +3,9 @@
 //! `cargo test ui_preview -- --ignored` legt PNGs unter `target/ui-preview/` ab. Die Tests sind ignoriert, weil sie
 //! eine GPU bzw. einen Vulkan-Treiber brauchen, den die CI nicht hat.
 
-use super::screens::{idle_card, processing_card, recording_card};
+use super::screens::{RecordingView, idle_card, processing_card, recording_card};
 use super::{DeleteLast, Mode, TutoMicApp};
+use crate::live;
 use crate::pipeline::Outcome;
 use crate::tuto::{Lesson, SchoolClass};
 use crate::tuto_panel::TutoPanel;
@@ -124,15 +125,18 @@ fn ui_preview() {
                     open: false,
                     minutes: 5,
                 };
-                recording_card(
-                    ui,
-                    false,
-                    Duration::from_secs(1234),
-                    0.08,
-                    "Standard-Mikrofon",
-                    10,
-                    &mut delete,
-                );
+                let view = RecordingView {
+                    paused: false,
+                    elapsed: Duration::from_secs(1234),
+                    level: 0.08,
+                    device: "Standard-Mikrofon",
+                    segment_secs: 10,
+                    live: Some(live::Status {
+                        transcribed: Duration::from_secs(1185),
+                        failed: false,
+                    }),
+                };
+                recording_card(ui, &view, &mut delete);
             });
         },
     );
@@ -143,15 +147,18 @@ fn ui_preview() {
         |a, ui| {
             a.draw_frame(ui, |_, ui| {
                 let mut delete = DeleteLast { open: true, minutes: 5 };
-                recording_card(
-                    ui,
-                    true,
-                    Duration::from_secs(1834),
-                    0.0,
-                    "Standard-Mikrofon",
-                    10,
-                    &mut delete,
-                );
+                let view = RecordingView {
+                    paused: true,
+                    elapsed: Duration::from_secs(1834),
+                    level: 0.0,
+                    device: "Standard-Mikrofon",
+                    segment_secs: 10,
+                    live: Some(live::Status {
+                        transcribed: Duration::ZERO,
+                        failed: true,
+                    }),
+                };
+                recording_card(ui, &view, &mut delete);
             });
         },
     );

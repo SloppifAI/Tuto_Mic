@@ -8,6 +8,7 @@ mod screens;
 use crate::config::Config;
 use crate::control::{Command, RecState};
 use crate::crypt::Key;
+use crate::live::{self, LiveTranscriber};
 use crate::pipeline::{self, Outcome, Progress, Source};
 use crate::recorder::Recorder;
 use crate::theme::{self, Brand};
@@ -63,6 +64,8 @@ pub struct TutoMicApp {
     page: Page,
     brand: Brand,
     recorder: Option<(Recorder, PathBuf)>,
+    /// Mitschrift der laufenden Aufnahme (siehe `live`); geht mit „Beenden und auswerten“ an die Pipeline.
+    live: Option<LiveTranscriber>,
     /// Schlüssel der laufenden Aufnahme, nur im Speicher (siehe `crypt`). Geht mit dem Start der Auswertung an die
     /// Pipeline über.
     recording_key: Option<Key>,
@@ -104,6 +107,7 @@ impl TutoMicApp {
             page: Page::Main,
             brand: Brand::load(ctx),
             recorder: None,
+            live: None,
             recording_key: None,
             processing: None,
             outcome: None,
@@ -134,6 +138,7 @@ impl TutoMicApp {
             page: Page::Main,
             brand: Brand::load(ctx),
             recorder: None,
+            live: None,
             recording_key: None,
             processing: None,
             outcome: None,
@@ -192,7 +197,13 @@ impl TutoMicApp {
     fn start_recording(&mut self) -> anyhow::Result<()> {
         let key = Key::generate()?;
         let dir = session::create_recording()?;
-        let rec = match Recorder::start(&session::audio_dir(&dir), self.cfg.segment_secs, key.clone()) {
+        let (sink, live) = if self.cfg.live_transcription && !self.models_missing() {
+            let (sink, live) = live::start(self.cfg.clone(), self.tuto.session().cloned());
+            (Some(sink), Some(live))
+        } else {
+            (None, None)
+        };
+        let rec = match Recorder::start(&session::audio_dir(&dir), self.cfg.segment_secs, key.clone(), sink) {
             Ok(rec) => rec,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&dir);
@@ -205,15 +216,23 @@ impl TutoMicApp {
         self.outcome = None;
         self.recorder = Some((rec, dir));
         self.recording_key = Some(key);
+        self.live = live;
         Ok(())
     }
 
     fn stop_recording(&mut self, ctx: &egui::Context) -> anyhow::Result<()> {
         if let Some((rec, dir)) = self.recorder.take() {
             let key = self.recording_key.take();
+            // Erst nach dem Stoppen weiß die Mitschrift, dass nichts mehr kommt; den Rest erledigt sie dann in der
+            // Pipeline. Scheitert das Stoppen, bricht sie beim Freigeben ab.
+            let live = self.live.take();
             rec.stop()?;
             let key = key.ok_or_else(|| anyhow::anyhow!("Schlüssel der Aufnahme fehlt"))?;
-            self.start_processing(Source::Session(dir), key, ctx);
+            let source = match live {
+                Some(live) => Source::Live(dir, live),
+                None => Source::Session(dir),
+            };
+            self.start_processing(source, key, ctx);
         }
         Ok(())
     }
@@ -452,6 +471,8 @@ impl eframe::App for TutoMicApp {
         if let Some((rec, _)) = self.recorder.take() {
             let _ = rec.stop();
         }
+        // Bricht eine laufende Mitschrift ab.
+        self.live = None;
     }
 }
 

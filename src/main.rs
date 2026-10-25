@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use tuto_mic::{app, config, deeplink, gpu, models, pipeline, prompts, session, transcribe, tuto};
+use tuto_mic::{app, config, deeplink, gpu, live, models, pipeline, prompts, session, transcribe, tuto};
 
 /// Tuto Mic – Unterricht aufnehmen, lokal transkribieren, pseudonymisieren und zusammenfassen.
 #[derive(Parser)]
@@ -37,6 +37,21 @@ enum Cmd {
     },
     /// Version, Whisper-Backend (GPU/CPU) und Modelle anzeigen.
     Info,
+    /// Entwicklerwerkzeug: Mitschrift während der Aufnahme mit einer Audiodatei nachstellen (Segmente wie der
+    /// Recorder, Zeitmessung). Gibt das Transkript im Klartext aus.
+    #[command(hide = true)]
+    SimulateLive {
+        file: PathBuf,
+        /// Wie viel schneller als Echtzeit eingespielt wird; 0 = ohne Pause.
+        #[arg(long, default_value_t = 1.0)]
+        speed: f64,
+        /// „Letzte Minuten verwerfen“ nachstellen: nach SEK Sekunden Aufnahme so viele Sekunden löschen (SEK:DAUER).
+        #[arg(long, value_name = "SEK:DAUER")]
+        delete: Option<String>,
+        /// Zum Vergleich danach dieselbe Datei am Stück transkribieren.
+        #[arg(long)]
+        compare: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -108,7 +123,43 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Cmd::Info) => info(),
+        Some(Cmd::SimulateLive {
+            file,
+            speed,
+            delete,
+            compare,
+        }) => simulate_live(&file, speed, delete.as_deref(), compare),
     }
+}
+
+fn simulate_live(file: &std::path::Path, speed: f64, delete: Option<&str>, compare: bool) -> anyhow::Result<()> {
+    use std::time::{Duration, Instant};
+    let cfg = config::Config::load()?;
+    let delete = delete
+        .map(|d| {
+            let (at, amount) = d.split_once(':').ok_or_else(|| anyhow::anyhow!("--delete SEK:DAUER"))?;
+            anyhow::Ok((
+                Duration::from_secs(at.trim().parse()?),
+                Duration::from_secs(amount.trim().parse()?),
+            ))
+        })
+        .transpose()?;
+    let (live, wait) = live::simulate(file, &cfg, speed, delete)?;
+    println!("{}", transcribe::to_text(&live.segments));
+    eprintln!(
+        "Mitschrift: {:.0} s Audio, {} Abschnitte, nach dem Ende noch {:.1} s",
+        live.frames as f64 / f64::from(tuto_mic::audio::WHISPER_RATE),
+        live.chunks,
+        wait.as_secs_f64()
+    );
+    if compare {
+        let samples = tuto_mic::audio::load_file(file)?;
+        let t = Instant::now();
+        let segments = transcribe::transcribe(&samples, &cfg, |_| {}, Arc::new(AtomicBool::new(false)))?;
+        println!("--- am Stück ---\n{}", transcribe::to_text(&segments));
+        eprintln!("Am Stück: {:.1} s (mit Laden des Modells)", t.elapsed().as_secs_f64());
+    }
+    Ok(())
 }
 
 fn process(file: PathBuf, no_llm: bool) -> anyhow::Result<()> {
@@ -195,6 +246,14 @@ fn info() -> anyhow::Result<()> {
             "nein"
         }
     );
+    println!(
+        "  Mitschrift:    {}",
+        if cfg.live_transcription {
+            "während der Aufnahme"
+        } else {
+            "erst nach der Aufnahme"
+        }
+    );
     println!("  Klassenliste:  {} Namen", cfg.class_list.len());
     println!("\nÄnderbar über die Datei oder diese Umgebungsvariablen (haben Vorrang):");
     for (name, what) in config::ENV_VARS {
@@ -203,7 +262,7 @@ fn info() -> anyhow::Result<()> {
         } else {
             ""
         };
-        println!("  {name:<24} {what}{set}");
+        println!("  {name:<28} {what}{set}");
     }
     Ok(())
 }

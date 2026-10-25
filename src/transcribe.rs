@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
 /// Setzt Stil (Groß-/Kleinschreibung, Satzzeichen) und Domäne.
 const INITIAL_PROMPT: &str =
@@ -55,6 +55,12 @@ pub struct Segment {
 }
 
 fn load_model(model: &Path) -> Result<WhisperContext> {
+    // Vor der GPU-Initialisierung prüfen: Ohne Datei braucht es keine.
+    anyhow::ensure!(
+        model.is_file(),
+        "Whisper-Modell nicht ladbar: {} fehlt",
+        model.display()
+    );
     let mut params = WhisperContextParameters::default();
     params.gpu_device(crate::gpu::select_gpu());
     WhisperContext::new_with_params(model, params)
@@ -70,56 +76,101 @@ pub fn probe_device(model: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Geladenes Whisper-Modell samt Arbeitszustand, mehrfach nutzbar: Die Mitschrift während der Aufnahme
+/// (`live`) lädt das Modell einmal und transkribiert damit Abschnitt für Abschnitt.
+pub struct Transcriber {
+    /// Hält auch den Kontext (das Modell) am Leben.
+    state: WhisperState,
+    language: String,
+    prompt: String,
+    vad_model: Option<String>,
+    threads: i32,
+}
+
+impl Transcriber {
+    /// Lädt das Modell. `threads` begrenzt die CPU-Threads von whisper.cpp (`None`: bis zu 8).
+    pub fn load(cfg: &Config, threads: Option<usize>) -> Result<Self> {
+        let state = load_model(&cfg.whisper_model)?
+            .create_state()
+            .context("Whisper konnte nicht gestartet werden")?;
+        let vad_model = if cfg.vad_model.is_file() {
+            Some(cfg.vad_model.to_string_lossy().into_owned())
+        } else {
+            log::warn!(
+                "VAD-Modell fehlt ({}) – Transkription ohne VAD",
+                cfg.vad_model.display()
+            );
+            None
+        };
+        let threads = threads.unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get().min(8)));
+        Ok(Self {
+            state,
+            language: cfg.language.clone(),
+            prompt: initial_prompt(&cfg.class_list),
+            vad_model,
+            threads: threads.max(1) as i32,
+        })
+    }
+
+    /// Transkribiert `samples` (16 kHz mono); Zeitstempel relativ zum Anfang von `samples`.
+    pub fn run(
+        &mut self,
+        samples: &[f32],
+        progress: Option<Box<dyn FnMut(i32)>>,
+        abort: Arc<AtomicBool>,
+    ) -> Result<Vec<Segment>> {
+        let mut params = FullParams::new(SamplingStrategy::BeamSearch {
+            beam_size: 5,
+            patience: -1.0,
+        });
+        params.set_language(Some(&self.language));
+        params.set_initial_prompt(&self.prompt);
+        params.set_n_threads(self.threads);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_special(false);
+        params.set_print_timestamps(false);
+        if let Some(vad) = &self.vad_model {
+            params.set_vad_model_path(Some(vad));
+            params.enable_vad(true);
+        }
+        // whisper-rs gibt die Closures nie frei. Die Mitschrift ruft oft auf und meldet deshalb keinen Fortschritt.
+        if let Some(progress) = progress {
+            params.set_progress_callback_safe(progress);
+        }
+        // whisper-rs 0.16 legt die Closure als `Box<dyn FnMut>` ab, liest sie im Callback aber als `F`. Nur wenn
+        // `F` selbst `Box<dyn FnMut() -> bool>` ist, passt beides zusammen. Sonst liest der Callback Zufallswerte
+        // und bricht sporadisch ab („failed to encode“; mit Vulkan fast immer).
+        let abort_callback: Box<dyn FnMut() -> bool> = Box::new(move || abort.load(Ordering::Relaxed));
+        params.set_abort_callback_safe(abort_callback);
+
+        self.state
+            .full(params, samples)
+            .context("Transkription fehlgeschlagen oder abgebrochen")?;
+
+        let mut out = Vec::new();
+        for seg in self.state.as_iter() {
+            let text = seg.to_str_lossy()?.trim().to_string();
+            if text.is_empty() || is_hallucination(&text) {
+                continue;
+            }
+            out.push(Segment {
+                start_ms: seg.start_timestamp() * 10,
+                text,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// Lädt das Modell und transkribiert `samples` in einem Durchgang (Auswertung ohne Mitschrift, Importe).
 pub fn transcribe(
     samples: &[f32],
     cfg: &Config,
     progress: impl FnMut(i32) + 'static,
     abort: Arc<AtomicBool>,
 ) -> Result<Vec<Segment>> {
-    let ctx = load_model(&cfg.whisper_model)?;
-    let mut state = ctx.create_state().context("Whisper konnte nicht gestartet werden")?;
-
-    let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-        beam_size: 5,
-        patience: -1.0,
-    });
-    params.set_language(Some(&cfg.language));
-    params.set_initial_prompt(&initial_prompt(&cfg.class_list));
-    params.set_n_threads(std::thread::available_parallelism().map_or(4, |n| n.get().min(8)) as i32);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_special(false);
-    params.set_print_timestamps(false);
-    let vad = cfg.vad_model.to_string_lossy().into_owned();
-    if cfg.vad_model.is_file() {
-        params.set_vad_model_path(Some(&vad));
-        params.enable_vad(true);
-    } else {
-        log::warn!("VAD-Modell fehlt ({vad}) – Transkription ohne VAD");
-    }
-    params.set_progress_callback_safe(progress);
-    // whisper-rs 0.16 legt die Closure als `Box<dyn FnMut>` ab, liest sie im Callback aber als `F`. Nur wenn
-    // `F` selbst `Box<dyn FnMut() -> bool>` ist, passt beides zusammen. Sonst liest der Callback Zufallswerte
-    // und bricht sporadisch ab („failed to encode“; mit Vulkan fast immer).
-    let abort_callback: Box<dyn FnMut() -> bool> = Box::new(move || abort.load(Ordering::Relaxed));
-    params.set_abort_callback_safe(abort_callback);
-
-    state
-        .full(params, samples)
-        .context("Transkription fehlgeschlagen oder abgebrochen")?;
-
-    let mut out = Vec::new();
-    for seg in state.as_iter() {
-        let text = seg.to_str_lossy()?.trim().to_string();
-        if text.is_empty() || is_hallucination(&text) {
-            continue;
-        }
-        out.push(Segment {
-            start_ms: seg.start_timestamp() * 10,
-            text,
-        });
-    }
-    Ok(out)
+    Transcriber::load(cfg, None)?.run(samples, Some(Box::new(progress)), abort)
 }
 
 /// Bekannte Whisper-Halluzinationen bei Stille/Musik (aus Untertitel-Trainingsdaten).

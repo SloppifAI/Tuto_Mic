@@ -34,6 +34,10 @@ pub const ENV_VARS: &[(&str, &str)] = &[
         "TUTO_MIC_KEEP_SESSIONS",
         "Daten nach dem Senden an Tuto behalten (true/false)",
     ),
+    (
+        "TUTO_MIC_LIVE_TRANSCRIPTION",
+        "Schon während der Aufnahme transkribieren (true/false)",
+    ),
     ("TUTO_MIC_CLASS_LIST", "Klassenliste, Namen mit ; getrennt"),
 ];
 
@@ -53,6 +57,8 @@ pub struct Config {
     pub summary_limit: usize,
     /// Länge der Aufnahme-Segmente. Bestimmt die Genauigkeit von "letzte X min löschen".
     pub segment_secs: u32,
+    /// Schon während der Aufnahme transkribieren (siehe `live`), damit nach dem Beenden nur der Rest fehlt.
+    pub live_transcription: bool,
     pub delete_audio_after_transcription: bool,
     /// Nach erfolgreichem Senden an Tuto die lokale Sitzung (Transkripte, Zusammenfassung) behalten. Standard: löschen.
     pub keep_sessions_after_upload: bool,
@@ -72,6 +78,7 @@ impl Default for Config {
             tuto_url: "https://hackathon.sebastian-bleuel.de".into(),
             summary_limit: 16383,
             segment_secs: 10,
+            live_transcription: true,
             delete_audio_after_transcription: true,
             keep_sessions_after_upload: false,
             class_list: Vec::new(),
@@ -142,6 +149,7 @@ impl Config {
                 "TUTO_MIC_VAD_MODEL" => self.vad_model = value.into(),
                 "TUTO_MIC_DELETE_AUDIO" => self.delete_audio_after_transcription = parse(name, &value)?,
                 "TUTO_MIC_KEEP_SESSIONS" => self.keep_sessions_after_upload = parse(name, &value)?,
+                "TUTO_MIC_LIVE_TRANSCRIPTION" => self.live_transcription = parse(name, &value)?,
                 "TUTO_MIC_CLASS_LIST" => self.class_list = parse_class_list(&value.replace(';', "\n")),
                 _ => unreachable!("jede Variable aus ENV_VARS hat einen Zweig"),
             }
@@ -193,13 +201,14 @@ mod tests {
         let env = |name: &str| match name {
             "TUTO_MIC_TUTO_URL" => Some("https://tuto.schule.example".to_string()),
             "TUTO_MIC_SUMMARY_LIMIT" => Some(" 9000 ".to_string()),
-            "TUTO_MIC_DELETE_AUDIO" => Some("false".to_string()),
+            "TUTO_MIC_DELETE_AUDIO" | "TUTO_MIC_LIVE_TRANSCRIPTION" => Some("false".to_string()),
             "TUTO_MIC_CLASS_LIST" => Some("Lena Wagner; Tom Becker".to_string()),
             _ => None,
         };
         cfg.apply_env(env).unwrap();
         assert_eq!(cfg.tuto_url, "https://tuto.schule.example");
         assert_eq!(cfg.summary_limit, 9000);
+        assert!(!cfg.live_transcription);
         assert!(!cfg.delete_audio_after_transcription);
         assert_eq!(cfg.class_list, ["Lena Wagner", "Tom Becker"]);
         assert_eq!(cfg.ollama_model, Config::default().ollama_model);
@@ -257,6 +266,7 @@ mod tests {
         assert_eq!(cfg.ollama_model, "nimble:9b");
         assert_eq!(cfg.language, "de");
         assert_eq!(cfg.segment_secs, 10);
+        assert!(cfg.live_transcription);
         assert!(cfg.delete_audio_after_transcription);
         assert_eq!(cfg.class_list, Vec::<String>::new());
     }

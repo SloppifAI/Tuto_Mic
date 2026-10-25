@@ -81,6 +81,30 @@ impl StreamResampler {
 /// Liest die verschlüsselten Aufnahme-Segmente einer Session (16 kHz mono WAV, siehe `recorder`) in
 /// Dateinamen-Reihenfolge und entschlüsselt sie mit dem Schlüssel der Sitzung.
 pub fn load_segments(audio_dir: &Path, key: &Key) -> Result<Vec<f32>> {
+    let mut samples = Vec::new();
+    for f in segment_files(audio_dir)? {
+        let mut reader = read_segment(&f, key)?;
+        samples.extend(
+            reader
+                .samples::<i16>()
+                .map(|s| s.map(|s| f32::from(s) / f32::from(i16::MAX)))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    Ok(samples)
+}
+
+/// Länge der gespeicherten Aufnahme in Frames (16 kHz), ohne alles auf einmal in den Speicher zu laden. Prüft
+/// zugleich, dass jedes Segment mit dem Schlüssel lesbar ist.
+pub fn segment_frames(audio_dir: &Path, key: &Key) -> Result<u64> {
+    segment_files(audio_dir)?
+        .iter()
+        .map(|f| read_segment(f, key).map(|r| u64::from(r.duration())))
+        .sum()
+}
+
+/// Segmentdateien in Aufnahme-Reihenfolge (Dateinamen sind fortlaufend nummeriert).
+fn segment_files(audio_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut files: Vec<_> = std::fs::read_dir(audio_dir)
         .with_context(|| format!("Audio-Verzeichnis fehlt: {}", audio_dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -91,19 +115,13 @@ pub fn load_segments(audio_dir: &Path, key: &Key) -> Result<Vec<f32>> {
         })
         .collect();
     files.sort();
-    let mut samples = Vec::new();
-    for f in files {
-        let wav = crypt::read(&f, key).context("Aufnahme-Segment nicht lesbar")?;
-        let mut reader = hound::WavReader::new(std::io::Cursor::new(wav))
-            .with_context(|| format!("Aufnahme-Segment beschädigt: {}", f.display()))?;
-        samples.extend(
-            reader
-                .samples::<i16>()
-                .map(|s| s.map(|s| f32::from(s) / f32::from(i16::MAX)))
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-    }
-    Ok(samples)
+    Ok(files)
+}
+
+fn read_segment(path: &Path, key: &Key) -> Result<hound::WavReader<std::io::Cursor<Vec<u8>>>> {
+    let wav = crypt::read(path, key).context("Aufnahme-Segment nicht lesbar")?;
+    hound::WavReader::new(std::io::Cursor::new(wav))
+        .with_context(|| format!("Aufnahme-Segment beschädigt: {}", path.display()))
 }
 
 /// Dekodiert eine beliebige Audiodatei (mp3, wav, flac, ogg, m4a, …) zu 16 kHz mono.
@@ -207,6 +225,7 @@ mod tests {
         std::fs::write(dir.path().join("seg_00000.wav"), b"RIFF").unwrap();
         let samples = load_segments(dir.path(), &key).unwrap();
         assert_eq!(samples.len(), 200);
+        assert_eq!(segment_frames(dir.path(), &key).unwrap(), 200);
         assert!(samples[0] < samples[199], "Segment 1 muss vor Segment 2 stehen");
     }
 
