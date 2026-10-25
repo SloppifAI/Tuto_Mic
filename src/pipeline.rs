@@ -80,6 +80,8 @@ pub struct Options {
     pub keep_original_transcript: bool,
     /// Tuto-Zugang, um vor der Transkription die Klassenliste zu laden (nur im Arbeitsspeicher).
     pub tuto: Option<crate::tuto::Session>,
+    /// Klasse und Fach der gewählten Tuto-Stunde, als Kontext für den Prompt (z. B. „Fach: Mathematik, Klasse: 7b“).
+    pub lesson_context: Option<String>,
     /// Schlüssel der Sitzung. Mit Schlüssel (GUI) werden alle Dateien verschlüsselt geschrieben (`name.enc`, siehe
     /// `crypt`) und die Aufnahme-Segmente damit gelesen. Ohne Schlüssel (nur `tuto-mic process`, Werkzeug für
     /// Entwickler:innen) im Klartext, damit sich die Ergebnisse ansehen lassen. Aufnahmen gibt es nur verschlüsselt.
@@ -345,7 +347,12 @@ fn finish(
     if !opts.skip_llm {
         check_abort(abort)?;
         step(format!("Zusammenfassung mit {} …", cfg.ollama_model));
-        let prompt = prompts::render(&opts.summary_prompt, &outcome.transcript_anon);
+        let mut prompt = prompts::render(&opts.summary_prompt, &outcome.transcript_anon);
+        if let Some(context) = &opts.lesson_context {
+            // Vorne, damit das Modell es vor dem Transkript liest; Klasse und Fach muss es dann nicht raten.
+            prompt =
+                format!("Angaben aus Tuto zu dieser Stunde: {context}. Verwende sie für die Überschrift.\n\n{prompt}");
+        }
         match generate_abortable(cfg, prompt, abort)? {
             Ok(g) => {
                 log.push(format!(
@@ -438,6 +445,7 @@ mod tests {
             skip_llm: false,
             keep_original_transcript: false,
             tuto: None,
+            lesson_context: None,
             encryption: None,
         }
     }
@@ -486,6 +494,24 @@ mod tests {
             Some("# Mathe\n[Schüler A] rechnete 25 % vor.")
         );
         assert!(read(dir.path(), "export.json").contains("\"audio_seconds\": 61.0"));
+    }
+
+    #[test]
+    fn lesson_context_goes_into_prompt() {
+        let (url, server) = serve_once(200, r##"{"response":"# Mathematik, Klasse 7b: Prozente"}"##);
+        let dir = tempfile::tempdir().unwrap();
+        let opts = Options {
+            lesson_context: Some("Fach: Mathematik, Klasse: 7b".into()),
+            ..options(&url)
+        };
+        run_finish(dir.path(), &opts);
+        let request: serde_json::Value = serde_json::from_str(&server.join().unwrap().body).unwrap();
+        let prompt = request["prompt"].as_str().unwrap();
+        assert!(
+            prompt.starts_with("Angaben aus Tuto zu dieser Stunde: Fach: Mathematik, Klasse: 7b."),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Fasse zusammen:"), "{prompt}");
     }
 
     #[test]

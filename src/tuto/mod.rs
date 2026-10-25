@@ -61,6 +61,35 @@ pub struct Lesson {
     pub released: bool,
 }
 
+/// Eintrag im Stundenplan der Lehrkraft an einem Tag (inkl. Vertretung).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct TimetableEntry {
+    /// Beginn und Ende in Ortszeit der Schule, `HH:MM`.
+    #[serde(with = "hhmm")]
+    pub starts_at: chrono::NaiveTime,
+    #[serde(with = "hhmm")]
+    pub ends_at: chrono::NaiveTime,
+    pub class: SchoolClass,
+    pub subject: String,
+    #[serde(default)]
+    pub room: Option<String>,
+    /// Stunde in Tuto, falls für diesen Termin schon eine angelegt ist.
+    #[serde(default)]
+    pub lesson_id: Option<u64>,
+}
+
+/// `HH:MM` (auch `HH:MM:SS`) als [`chrono::NaiveTime`].
+mod hhmm {
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<chrono::NaiveTime, D::Error> {
+        let s = String::deserialize(d)?;
+        chrono::NaiveTime::parse_from_str(&s, "%H:%M")
+            .or_else(|_| chrono::NaiveTime::parse_from_str(&s, "%H:%M:%S"))
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// Klasse mit den Anzeigenamen ihrer Schüler:innen (nur für die lokale Pseudonymisierung).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct ClassRoster {
@@ -177,6 +206,22 @@ impl Client {
             return Err(read_error(&mut resp).into());
         }
         resp.body_mut().read_json().context("Unerwartete Antwort von Tuto")
+    }
+
+    /// Stundenplan der Lehrkraft an einem Tag. `None`, wenn die Tuto-Instanz das (noch) nicht anbietet (404).
+    pub fn timetable(&self, day: NaiveDate) -> Result<Option<Vec<TimetableEntry>>> {
+        let resp = self
+            .agent
+            .get(self.url("/timetable"))
+            .query("date", day.format("%Y-%m-%d").to_string())
+            .header("Accept", "application/json")
+            .header("Authorization", self.auth())
+            .call();
+        match self.json::<Data<Vec<TimetableEntry>>>(resp) {
+            Ok(data) => Ok(Some(data.data)),
+            Err(e) if matches!(e.downcast_ref::<ApiError>(), Some(ApiError::NotFound(_))) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// Fächer, die an der Schule in Stunden vorkommen (alphabetisch). Beim Anlegen bleibt das Fach Freitext.
@@ -440,6 +485,30 @@ mod tests {
     fn logout_accepts_already_invalid_token() {
         let (url, _server) = serve_once(401, r#"{"message":"Unauthenticated."}"#);
         client(&url).logout().unwrap();
+    }
+
+    #[test]
+    fn reads_timetable() {
+        let (url, server) = serve_once(
+            200,
+            r#"{"data":[{"starts_at":"09:50","ends_at":"10:35:00","class":{"id":3,"name":"7b"},"subject":"Mathematik","room":"B12","lesson_id":12},{"starts_at":"11:40","ends_at":"12:25","class":{"id":4,"name":"7a"},"subject":"Deutsch"}]}"#,
+        );
+        let day = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let entries = client(&url).timetable(day).unwrap().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].starts_at, chrono::NaiveTime::from_hms_opt(9, 50, 0).unwrap());
+        assert_eq!(entries[0].lesson_id, Some(12));
+        assert_eq!(entries[1].room, None);
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .head
+                .starts_with("GET /api/v1/timetable?date=2026-10-26 ")
+        );
+
+        let (url, _server) = serve_once(404, r#"{"message":"Not Found"}"#);
+        assert_eq!(client(&url).timetable(day).unwrap(), None);
     }
 
     #[test]

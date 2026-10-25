@@ -231,6 +231,7 @@ impl TutoMicApp {
             skip_llm: false,
             keep_original_transcript: self.mode.admin,
             tuto: self.tuto.session().cloned(),
+            lesson_context: self.tuto.planned_context(),
             encryption: Some(key),
         };
         let ctx = ctx.clone();

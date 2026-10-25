@@ -113,6 +113,7 @@ fn process(file: PathBuf, no_llm: bool) -> anyhow::Result<()> {
         keep_original_transcript: true,
         // Ist die App verbunden, nutzt auch die CLI die Klassenliste aus Tuto.
         tuto: tuto::store::load().ok().flatten(),
+        lesson_context: None,
         // Entwicklerwerkzeug: Ergebnisse im Klartext, damit sie sich ansehen lassen. Die GUI verschlüsselt immer.
         encryption: None,
     };

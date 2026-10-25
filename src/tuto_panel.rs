@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::deeplink;
 use crate::theme::{self, BLUE_50, EMERALD_600, ROSE_600};
 use crate::tuto::auth::{Callback, PendingLogin};
-use crate::tuto::{self, ApiError, Client, Lesson, NewLesson, SchoolClass, Session, store};
+use crate::tuto::{self, ApiError, Client, Lesson, NewLesson, SchoolClass, Session, TimetableEntry, store};
 use chrono::Local;
 use eframe::egui::{self, Color32, RichText};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -20,6 +20,7 @@ enum Event {
         lessons: Vec<Lesson>,
         classes: Vec<SchoolClass>,
         subjects: Vec<String>,
+        timetable: Option<Vec<TimetableEntry>>,
     },
     Created(Lesson),
     Sent(Lesson),
@@ -81,6 +82,12 @@ pub struct TutoPanel {
     listen_error: Option<String>,
     /// Erfolgreich gesendete Stunde, bis die App sie mit [`TutoPanel::take_sent`] abholt.
     sent: Option<Lesson>,
+    /// Stundenplan heute; `None`, solange Tuto ihn nicht anbietet.
+    timetable: Option<Vec<TimetableEntry>>,
+    /// Vor der Aufnahme gewählte Stunde.
+    plan: Plan,
+    /// Die Wahl aus `plan` wurde beim Senden schon übernommen.
+    plan_applied: bool,
 }
 
 impl TutoPanel {
@@ -142,6 +149,9 @@ impl TutoPanel {
             message: None,
             listen_error: None,
             sent: None,
+            timetable: None,
+            plan: Plan::Undecided,
+            plan_applied: false,
         }
     }
 
@@ -200,8 +210,19 @@ impl TutoPanel {
                     lessons,
                     classes,
                     subjects,
+                    timetable,
                 } => {
                     self.subjects = subjects;
+                    if self.plan == Plan::Undecided {
+                        let now = Local::now().time();
+                        self.plan = timetable
+                            .as_deref()
+                            .and_then(|entries| current_slot(entries, now))
+                            .map_or(Plan::Later, |i| {
+                                Plan::Slot(Box::new(timetable.as_ref().expect("oben geprüft")[i].clone()))
+                            });
+                    }
+                    self.timetable = timetable;
                     self.selected = self.selected.filter(|id| lessons.iter().any(|l| l.id == *id));
                     if self.selected.is_none() && lessons.len() == 1 {
                         self.selected = Some(lessons[0].id);
@@ -230,6 +251,10 @@ impl TutoPanel {
                     }
                     self.confirm_overwrite = false;
                     self.sent = Some(lesson);
+                    // Für die nächste Aufnahme neu vorbelegen.
+                    self.plan = Plan::Undecided;
+                    self.plan_applied = false;
+                    self.loaded = false;
                 }
                 Event::Failed(e) => self.message = Some((false, e)),
                 Event::Disconnected => {
@@ -416,25 +441,147 @@ impl TutoPanel {
         }
     }
 
-    fn ui_lessons(&mut self, ui: &mut egui::Ui, cfg: &Config, summary: Option<&str>, ctx: &egui::Context) {
-        if !self.loaded {
-            let today = Local::now().date_naive();
-            self.client_job(
-                "Lade Stunden …",
-                ctx,
-                move |c| {
-                    // Die Fächerliste ist nur ein Komfort: Fehlt sie (ältere Tuto-Version), geht es ohne weiter.
-                    let subjects = c.subjects().unwrap_or_default();
-                    Ok((c.lessons_on(today)?, c.classes()?, subjects))
-                },
-                |(lessons, classes, subjects)| Event::Loaded {
-                    lessons,
-                    classes,
-                    subjects,
-                },
-            );
+    /// Stunden, Klassen, Fächer und Stundenplan von heute im Hintergrund laden.
+    fn load(&mut self, ctx: &egui::Context) {
+        let today = Local::now().date_naive();
+        self.client_job(
+            "Lade Stunden …",
+            ctx,
+            move |c| {
+                // Fächer und Stundenplan sind Komfort: Fehlen sie (ältere Tuto-Version), geht es ohne weiter.
+                let subjects = c.subjects().unwrap_or_default();
+                let timetable = c.timetable(today).unwrap_or_else(|e| {
+                    log::warn!("Stundenplan nicht ladbar: {e:#}");
+                    None
+                });
+                Ok((c.lessons_on(today)?, c.classes()?, subjects, timetable))
+            },
+            |(lessons, classes, subjects, timetable)| Event::Loaded {
+                lessons,
+                classes,
+                subjects,
+                timetable,
+            },
+        );
+    }
+
+    /// Klasse und Fach der vor der Aufnahme gewählten Stunde, als Kontext für den Prompt.
+    pub fn planned_context(&self) -> Option<String> {
+        let (class, subject) = match &self.plan {
+            Plan::Slot(entry) => (entry.class.name.clone(), entry.subject.clone()),
+            Plan::Lesson(id) => {
+                let lesson = self.lessons.iter().find(|l| l.id == *id)?;
+                (lesson.class.name.clone(), lesson.subject.clone())
+            }
+            Plan::Undecided | Plan::Later => return None,
+        };
+        Some(format!("Fach: {subject}, Klasse: {class}"))
+    }
+
+    /// Auswahl „Für welche Stunde?“ auf der Startseite. Vorbelegt mit der Stunde, die laut Stundenplan gerade läuft.
+    pub fn ui_plan(&mut self, ui: &mut egui::Ui) {
+        if self.session.is_none() {
             return;
         }
+        let ctx = ui.ctx().clone();
+        if !self.loaded {
+            if self.busy.is_none() {
+                self.load(&ctx);
+            }
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new("Lade deine Stunden …").color(theme::weak_text(ui)));
+            });
+            return;
+        }
+        let mut options: Vec<(Plan, String)> = Vec::new();
+        for entry in self.timetable.iter().flatten() {
+            let room = entry.room.as_deref().map(|r| format!(", {r}")).unwrap_or_default();
+            options.push((
+                Plan::Slot(Box::new(entry.clone())),
+                format!(
+                    "{}–{}  {} · {}{room}",
+                    entry.starts_at.format("%H:%M"),
+                    entry.ends_at.format("%H:%M"),
+                    entry.class.name,
+                    entry.subject
+                ),
+            ));
+        }
+        let in_timetable: Vec<u64> = self.timetable.iter().flatten().filter_map(|e| e.lesson_id).collect();
+        for lesson in self.lessons.iter().filter(|l| !in_timetable.contains(&l.id)) {
+            options.push((
+                Plan::Lesson(lesson.id),
+                format!("{} · {}: {}", lesson.class.name, lesson.subject, lesson.topic),
+            ));
+        }
+        options.push((Plan::Later, "Später wählen".into()));
+        let current = options
+            .iter()
+            .find(|(p, _)| *p == self.plan)
+            .map_or("Später wählen".to_string(), |(_, label)| label.clone());
+
+        ui.horizontal(|ui| {
+            let label = ui.label("Für welche Stunde?");
+            egui::ComboBox::from_id_salt("plan")
+                .selected_text(current)
+                .width(320.0)
+                .show_ui(ui, |ui| {
+                    for (plan, text) in options {
+                        if ui.selectable_label(self.plan == plan, text).clicked() {
+                            self.plan = plan;
+                            self.plan_applied = false;
+                        }
+                    }
+                })
+                .response
+                .labelled_by(label.id);
+        });
+        if self.timetable.is_none() {
+            ui.label(
+                RichText::new("Ohne Stundenplan in Tuto wird keine Stunde vorgeschlagen.")
+                    .small()
+                    .color(theme::weak_text(ui)),
+            );
+        }
+    }
+
+    /// Übernimmt die vor der Aufnahme gewählte Stunde einmalig in den Senden-Bereich: vorhandene Stunde wählen oder
+    /// das Formular „Neue Stunde“ mit Klasse, Fach und (aus der Zusammenfassung) Thema vorbelegen.
+    fn apply_plan(&mut self, summary: Option<&str>) {
+        if self.plan_applied {
+            return;
+        }
+        self.plan_applied = true;
+        let lesson_id = match &self.plan {
+            Plan::Lesson(id) => Some(*id),
+            Plan::Slot(entry) => entry.lesson_id,
+            Plan::Undecided | Plan::Later => return,
+        };
+        if let Some(id) = lesson_id.filter(|id| self.lessons.iter().any(|l| l.id == *id)) {
+            self.selected = Some(id);
+            return;
+        }
+        if let Plan::Slot(entry) = &self.plan {
+            self.form = NewLessonForm {
+                open: true,
+                class_id: Some(entry.class.id),
+                subject: entry.subject.clone(),
+                custom_subject: false,
+                topic: summary
+                    .and_then(heading_subject_topic)
+                    .map(|(_, topic)| topic)
+                    .unwrap_or_default(),
+            };
+        }
+    }
+
+    fn ui_lessons(&mut self, ui: &mut egui::Ui, cfg: &Config, summary: Option<&str>, ctx: &egui::Context) {
+        if !self.loaded {
+            self.load(ctx);
+            return;
+        }
+        self.apply_plan(summary);
         let weak = theme::weak_text(ui);
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("Deine Stunden heute, {}", Local::now().format("%d.%m.%Y"))).color(weak));
@@ -654,6 +801,35 @@ fn heading_subject_topic(summary: &str) -> Option<(String, String)> {
     (!subject.is_empty() && !topic.is_empty()).then(|| (subject.to_string(), topic.to_string()))
 }
 
+/// Vor der Aufnahme gewählte Stunde.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Plan {
+    /// Noch nichts gewählt; nach dem Laden wird vorbelegt.
+    Undecided,
+    /// Eintrag aus dem Stundenplan (mit oder ohne schon angelegte Stunde).
+    Slot(Box<TimetableEntry>),
+    /// Stunde aus Tuto ohne Stundenplan-Eintrag.
+    Lesson(u64),
+    Later,
+}
+
+/// Die Stunde, die zu `now` läuft – mit 10 Minuten Vorlauf, damit vor Beginn gestartete Aufnahmen passen. Läuft
+/// keine, die nächste innerhalb von 15 Minuten.
+fn current_slot(entries: &[TimetableEntry], now: chrono::NaiveTime) -> Option<usize> {
+    let lead = chrono::TimeDelta::minutes(10);
+    entries
+        .iter()
+        .position(|e| e.starts_at - lead <= now && now <= e.ends_at)
+        .or_else(|| {
+            entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.starts_at > now && e.starts_at - now <= chrono::TimeDelta::minutes(15))
+                .min_by_key(|(_, e)| e.starts_at)
+                .map(|(i, _)| i)
+        })
+}
+
 /// Hinweis in Bernstein: Achtung, aber kein Fehler.
 fn warning(ui: &mut egui::Ui, text: &str) {
     let (fill, fg) = if ui.visuals().dark_mode {
@@ -722,6 +898,30 @@ impl TutoPanel {
         panel
     }
 
+    /// Verbunden, mit Stundenplan; vorbelegt ist der Eintrag `selected`.
+    pub fn demo_timetable(selected: usize) -> Self {
+        let class = SchoolClass {
+            id: 3,
+            name: "7b".into(),
+        };
+        let slot = |h: u32, m: u32, eh: u32, em: u32, subject: &str, room: &str| TimetableEntry {
+            starts_at: chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap(),
+            ends_at: chrono::NaiveTime::from_hms_opt(eh, em, 0).unwrap(),
+            class: class.clone(),
+            subject: subject.into(),
+            room: Some(room.into()),
+            lesson_id: None,
+        };
+        let entries = vec![
+            slot(8, 0, 8, 45, "Deutsch", "B12"),
+            slot(8, 50, 9, 35, "Mathematik", "B12"),
+        ];
+        let mut panel = Self::demo_connected(Vec::new(), None);
+        panel.plan = Plan::Slot(Box::new(entries[selected].clone()));
+        panel.timetable = Some(entries);
+        panel
+    }
+
     /// Zustand „verbunden, Stunden geladen“ für Bildschirmfotos.
     pub fn demo_connected(lessons: Vec<Lesson>, selected: Option<u64>) -> Self {
         Self {
@@ -764,5 +964,58 @@ mod tests {
         );
         assert_eq!(heading_subject_topic("## Lernziele\n- …"), None);
         assert_eq!(heading_subject_topic("# Nur eine Überschrift"), None);
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+    use chrono::NaiveTime;
+
+    fn entry(start: (u32, u32), end: (u32, u32), class: &str) -> TimetableEntry {
+        TimetableEntry {
+            starts_at: NaiveTime::from_hms_opt(start.0, start.1, 0).unwrap(),
+            ends_at: NaiveTime::from_hms_opt(end.0, end.1, 0).unwrap(),
+            class: SchoolClass {
+                id: 1,
+                name: class.into(),
+            },
+            subject: "Mathematik".into(),
+            room: None,
+            lesson_id: None,
+        }
+    }
+
+    fn at(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn preselects_running_or_upcoming_lesson() {
+        let day = [
+            entry((8, 0), (8, 45), "7a"),
+            entry((8, 50), (9, 35), "7b"),
+            entry((11, 40), (12, 25), "8c"),
+        ];
+        assert_eq!(current_slot(&day, at(8, 10)), Some(0), "läuft gerade");
+        assert_eq!(
+            current_slot(&day, at(8, 47)),
+            Some(1),
+            "Pause: 10 min Vorlauf der nächsten Stunde"
+        );
+        assert_eq!(current_slot(&day, at(11, 28)), Some(2), "beginnt in 12 min");
+        assert_eq!(current_slot(&day, at(10, 30)), None, "Freistunde");
+        assert_eq!(current_slot(&day, at(13, 0)), None, "Schulschluss");
+        assert_eq!(current_slot(&[], at(9, 0)), None);
+    }
+
+    #[test]
+    fn planned_slot_gives_prompt_context() {
+        let mut panel = TutoPanel::offline();
+        assert_eq!(panel.planned_context(), None);
+        panel.plan = Plan::Slot(Box::new(entry((8, 0), (8, 45), "7b")));
+        assert_eq!(panel.planned_context().as_deref(), Some("Fach: Mathematik, Klasse: 7b"));
+        panel.plan = Plan::Later;
+        assert_eq!(panel.planned_context(), None);
     }
 }

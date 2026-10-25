@@ -229,12 +229,18 @@ fn ui_preview() {
         TutoMicApp::draw,
     );
     page(
+        "13-stundenwahl",
+        false,
+        |ctx| app(ctx, TutoPanel::demo_timetable(1), None, true),
+        TutoMicApp::draw,
+    );
+    page(
         "09-bereit-dunkel",
         true,
         |ctx| app(ctx, TutoPanel::offline(), None, true),
         |a, ui| {
             a.draw_frame(ui, |_, ui| {
-                let _ = idle_card(ui, true);
+                let _ = idle_card(ui, true, |_| {});
             });
         },
     );

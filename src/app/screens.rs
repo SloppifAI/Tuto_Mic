@@ -52,7 +52,8 @@ impl TutoMicApp {
         match state {
             RecState::Idle if self.outcome.is_some() => self.result_cards(ui),
             RecState::Idle => {
-                if idle_card(ui, !self.models_missing()) {
+                let ready = !self.models_missing();
+                if idle_card(ui, ready, |ui| self.tuto.ui_plan(ui)) {
                     self.handle(Command::Start, &ctx);
                 }
             }
@@ -279,7 +280,7 @@ fn message_card(ui: &mut egui::Ui, text: &str, error: bool) -> bool {
 }
 
 /// Startkarte mit großem Aufnahmeknopf. Liefert `true`, wenn die Aufnahme starten soll.
-pub(super) fn idle_card(ui: &mut egui::Ui, ready: bool) -> bool {
+pub(super) fn idle_card(ui: &mut egui::Ui, ready: bool, extra: impl FnOnce(&mut egui::Ui)) -> bool {
     let mut start = false;
     theme::card(ui).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -293,7 +294,9 @@ pub(super) fn idle_card(ui: &mut egui::Ui, ready: bool) -> bool {
                 )
                 .color(theme::weak_text(ui)),
             );
-            ui.add_space(20.0);
+            ui.add_space(12.0);
+            extra(ui);
+            ui.add_space(8.0);
             start = record_button(ui, ready).clicked();
             ui.add_space(8.0);
             ui.label(RichText::new("Aufnahme starten").font(theme::heading(16.0)));
