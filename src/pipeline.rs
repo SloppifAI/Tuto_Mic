@@ -4,6 +4,7 @@
 
 use crate::anonymize::Pseudonymizer;
 use crate::config::Config;
+use crate::crypt::{self, Key};
 use crate::llm::Ollama;
 use crate::{audio, gpu, prompts, session, transcribe};
 use anyhow::{Context, Result};
@@ -79,6 +80,10 @@ pub struct Options {
     pub keep_original_transcript: bool,
     /// Tuto-Zugang, um vor der Transkription die Klassenliste zu laden (nur im Arbeitsspeicher).
     pub tuto: Option<crate::tuto::Session>,
+    /// Schlüssel der Sitzung. Mit Schlüssel (GUI) werden alle Dateien verschlüsselt geschrieben (`name.enc`, siehe
+    /// `crypt`) und die Aufnahme-Segmente damit gelesen. Ohne Schlüssel (nur `tuto-mic process`, Werkzeug für
+    /// Entwickler:innen) im Klartext, damit sich die Ergebnisse ansehen lassen. Aufnahmen gibt es nur verschlüsselt.
+    pub encryption: Option<Key>,
 }
 
 pub enum Progress {
@@ -151,9 +156,13 @@ fn run_in(
             (session::create_in(sessions, import_label(path))?, transcript, None)
         }
         Source::Session(dir) => {
-            let samples = load_audio(&step, &mut log, || audio::load_segments(&session::audio_dir(dir)))?;
+            let key = opts
+                .encryption
+                .as_ref()
+                .context("Die Aufnahme ist verschlüsselt, der Schlüssel der Sitzung fehlt")?;
+            let samples = load_audio(&step, &mut log, || audio::load_segments(&session::audio_dir(dir), key))?;
             check_abort(abort)?;
-            // Bei Abbruch bleibt das Audio der Aufnahme erhalten, damit nichts unwiederbringlich verloren geht.
+            // Bei Abbruch bleibt das (verschlüsselte) Audio der Aufnahme erhalten.
             let (transcript, secs) = transcribe_samples(samples, &opts.cfg, tx, notify, abort, &step, &mut log)?;
             if opts.cfg.delete_audio_after_transcription {
                 let audio_dir = session::audio_dir(dir);
@@ -305,9 +314,14 @@ fn finish(
     mut log: Vec<String>,
 ) -> Result<Outcome> {
     let cfg = &opts.cfg;
+    // Mit Schlüssel verschlüsselt als `name.enc`, ohne (CLI) im Klartext unter `name`.
     let write = |name: &str, content: &str| {
         let path = dir.join(name);
-        std::fs::write(&path, content).with_context(|| format!("Datei nicht schreibbar: {}", path.display()))
+        if let Some(key) = &opts.encryption {
+            crypt::write(&crypt::encrypted_path(&path), key, content.as_bytes())
+        } else {
+            std::fs::write(&path, content).with_context(|| format!("Datei nicht schreibbar: {}", path.display()))
+        }
     };
 
     if opts.keep_original_transcript {
@@ -424,6 +438,7 @@ mod tests {
             skip_llm: false,
             keep_original_transcript: false,
             tuto: None,
+            encryption: None,
         }
     }
 
@@ -681,6 +696,57 @@ mod tests {
         let missing = input.path().join("fehlt.mp3");
         assert!(run_source(sessions.path(), &Source::File(missing), &opts).is_err());
         assert_eq!(entries(sessions.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn with_key_all_files_are_encrypted() {
+        let (url, _server) = serve_once(200, r##"{"response":"# Mathe\nLena rechnete 25 % vor."}"##);
+        let input = tempfile::tempdir().unwrap();
+        let path = input.path().join("stunde.txt");
+        std::fs::write(&path, TRANSCRIPT).unwrap();
+        let sessions = tempfile::tempdir().unwrap();
+        let key = Key::generate().unwrap();
+        let opts = Options {
+            keep_original_transcript: true,
+            encryption: Some(key.clone()),
+            ..options(&url)
+        };
+        let outcome = run_source(sessions.path(), &Source::Transcript(path), &opts).unwrap();
+
+        let names = [
+            "export.json.enc",
+            "log.txt.enc",
+            "summary.md.enc",
+            "transcript.anon.txt.enc",
+            "transcript.txt.enc",
+        ];
+        assert_eq!(entries(&outcome.dir), names);
+        let decrypt = |name: &str| String::from_utf8(crypt::read(&outcome.dir.join(name), &key).unwrap()).unwrap();
+        for name in names {
+            let raw = std::fs::read(outcome.dir.join(name)).unwrap();
+            assert!(crypt::is_encrypted(&raw), "{name}");
+            // Weder Namen noch sonstiger Inhalt im Klartext auf der Platte.
+            for word in [&b"Lena"[..], b"Tafel", b"Mathe", b"tuto-mic"] {
+                assert!(!raw.windows(word.len()).any(|w| w == word), "{name}");
+            }
+            assert!(crypt::read(&outcome.dir.join(name), &Key::generate().unwrap()).is_err());
+        }
+        // Mit dem Schlüssel sind die Inhalte dieselben wie ohne Verschlüsselung.
+        assert_eq!(decrypt("transcript.txt.enc"), TRANSCRIPT);
+        assert_eq!(decrypt("transcript.anon.txt.enc"), outcome.transcript_anon);
+        assert_eq!(Some(decrypt("summary.md.enc")), outcome.summary);
+        let export: serde_json::Value = serde_json::from_str(&decrypt("export.json.enc")).unwrap();
+        assert_eq!(export["format"], "tuto-mic/lesson@1");
+        assert_eq!(export["transcript"], outcome.transcript_anon.as_str());
+        assert!(decrypt("log.txt.enc").contains("Transkript importiert"));
+    }
+
+    #[test]
+    fn recording_without_key_is_refused() {
+        let sessions = tempfile::tempdir().unwrap();
+        let dir = session::create_in(sessions.path(), None).unwrap();
+        let err = run_source(sessions.path(), &Source::Session(dir), &options(NO_OLLAMA)).unwrap_err();
+        assert!(format!("{err:#}").contains("Schlüssel der Sitzung fehlt"), "{err:#}");
     }
 
     #[test]

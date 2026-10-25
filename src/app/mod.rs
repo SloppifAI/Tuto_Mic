@@ -7,6 +7,7 @@ mod screens;
 
 use crate::config::Config;
 use crate::control::{Command, RecState};
+use crate::crypt::Key;
 use crate::pipeline::{self, Outcome, Progress, Source};
 use crate::recorder::Recorder;
 use crate::theme::{self, Brand};
@@ -62,6 +63,11 @@ pub struct TutoMicApp {
     page: Page,
     brand: Brand,
     recorder: Option<(Recorder, PathBuf)>,
+    /// Schlüssel der laufenden Aufnahme, nur im Speicher (siehe `crypt`). Geht mit dem Start der Auswertung an die
+    /// Pipeline über.
+    recording_key: Option<Key>,
+    /// Sperre auf das Sitzungsverzeichnis: Nur die erste Instanz räumt alte Sitzungen auf.
+    _sessions_lock: Option<session::Lock>,
     processing: Option<Processing>,
     outcome: Option<Outcome>,
     error: Option<String>,
@@ -89,13 +95,16 @@ impl TutoMicApp {
                 Some(format!("{e:#} – es gelten die Standardwerte, ohne Klassenliste")),
             ),
         };
+        let sessions_lock = clean_up_sessions();
         Self {
+            _sessions_lock: sessions_lock,
             admin: admin::AdminState::new(&cfg),
             cfg,
             mode,
             page: Page::Main,
             brand: Brand::load(ctx),
             recorder: None,
+            recording_key: None,
             processing: None,
             outcome: None,
             error,
@@ -118,12 +127,14 @@ impl TutoMicApp {
         theme::install(ctx);
         let cfg = Config::default();
         Self {
+            _sessions_lock: None,
             admin: admin::AdminState::new(&cfg),
             cfg,
             mode,
             page: Page::Main,
             brand: Brand::load(ctx),
             recorder: None,
+            recording_key: None,
             processing: None,
             outcome: None,
             error: None,
@@ -179,8 +190,9 @@ impl TutoMicApp {
     }
 
     fn start_recording(&mut self) -> anyhow::Result<()> {
+        let key = Key::generate()?;
         let dir = session::create_recording()?;
-        let rec = match Recorder::start(&session::audio_dir(&dir), self.cfg.segment_secs) {
+        let rec = match Recorder::start(&session::audio_dir(&dir), self.cfg.segment_secs, key.clone()) {
             Ok(rec) => rec,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&dir);
@@ -192,18 +204,23 @@ impl TutoMicApp {
         self.rec_error_seen = None;
         self.outcome = None;
         self.recorder = Some((rec, dir));
+        self.recording_key = Some(key);
         Ok(())
     }
 
     fn stop_recording(&mut self, ctx: &egui::Context) -> anyhow::Result<()> {
         if let Some((rec, dir)) = self.recorder.take() {
+            let key = self.recording_key.take();
             rec.stop()?;
-            self.start_processing(Source::Session(dir), ctx);
+            let key = key.ok_or_else(|| anyhow::anyhow!("Schlüssel der Aufnahme fehlt"))?;
+            self.start_processing(Source::Session(dir), key, ctx);
         }
         Ok(())
     }
 
-    fn start_processing(&mut self, source: Source, ctx: &egui::Context) {
+    /// Startet die Auswertung. `key` verschlüsselt alle Dateien der Sitzung; er lebt nur so lange wie die
+    /// Pipeline, danach sind die Dateien nicht mehr lesbar (die GUI braucht sie nicht, sie zeigt `Outcome`).
+    fn start_processing(&mut self, source: Source, key: Key, ctx: &egui::Context) {
         self.notice = None;
         self.outcome = None;
         let (tx, rx) = mpsc::channel();
@@ -214,6 +231,7 @@ impl TutoMicApp {
             skip_llm: false,
             keep_original_transcript: self.mode.admin,
             tuto: self.tuto.session().cloned(),
+            encryption: Some(key),
         };
         let ctx = ctx.clone();
         pipeline::spawn(source, opts, tx, Arc::new(move || ctx.request_repaint()), abort.clone());
@@ -336,7 +354,10 @@ impl TutoMicApp {
         if source.needs_whisper() && self.models_missing() {
             self.error = Some("Für Audiodateien fehlt die Spracherkennung, bitte zuerst herunterladen".into());
         } else {
-            self.start_processing(source, ctx);
+            match Key::generate() {
+                Ok(key) => self.start_processing(source, key, ctx),
+                Err(e) => self.error = Some(format!("{e:#}")),
+            }
         }
     }
 
@@ -431,6 +452,28 @@ impl eframe::App for TutoMicApp {
             let _ = rec.stop();
         }
     }
+}
+
+/// Sperrt das Sitzungsverzeichnis und löscht Sitzungen früherer Läufe, deren Schlüssel mit der App verloren ging.
+/// Läuft schon eine andere Instanz, bleibt alles unangetastet (ihre Sitzungen sind noch lesbar).
+fn clean_up_sessions() -> Option<session::Lock> {
+    let lock = match session::lock() {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            log::warn!("Tuto Mic läuft schon – alte Sitzungen werden nicht aufgeräumt");
+            return None;
+        }
+        Err(e) => {
+            log::warn!("{e:#} – alte Sitzungen werden nicht aufgeräumt");
+            return None;
+        }
+    };
+    match session::remove_unreadable() {
+        Ok(0) => {}
+        Ok(n) => log::info!("{n} nicht mehr lesbare Sitzung(en) früherer Läufe gelöscht"),
+        Err(e) => log::warn!("Alte Sitzungen nicht aufräumbar: {e:#}"),
+    }
+    Some(lock)
 }
 
 /// Ordner im Dateimanager öffnen.

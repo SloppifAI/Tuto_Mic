@@ -71,6 +71,7 @@ Zusammenfassung fehlt.
 | Ausgabe des Modells gefiltert | Die fertige Zusammenfassung läuft noch einmal durch dieselbe Pseudonymisierung. |
 | Keine Klarnamen auf der Platte | Das Original-Transkript wird im normalen Betrieb nicht gespeichert, nur `transcript.anon.txt`, `summary.md`, `export.json` (pseudonymisiert) und `log.txt`. Nur im Admin-Modus bleibt `transcript.txt` zum Prüfen liegen. Ein Test (`pipeline::tests`) stellt sicher, dass keine Namen in die Ausgaben gelangen. |
 | Löschen nach dem Senden | Nach erfolgreichem Upload löscht die App den Ordner der Stunde (abschaltbar: `TUTO_MIC_KEEP_SESSIONS`). |
+| Verschlüsselung auf der Platte | Audio-Segmente und alle Sitzungsdateien mit XChaCha20-Poly1305; der Schlüssel entsteht pro Aufnahme und existiert nur im Arbeitsspeicher. Nach Absturz oder Neustart sind Reste unlesbar und werden beim nächsten Start gelöscht. „Verwerfen“ löscht nicht gesendete Auswertungen sofort. |
 | Anmeldung bei Tuto | OAuth 2.0 mit PKCE im System-Browser: Die App sieht kein Passwort. Das Token liegt im Schlüsselbund des Betriebssystems (Windows-Anmeldeinformationsverwaltung, macOS-Schlüsselbund, Linux Secret Service), nie in Dateien oder Logs. Beim Trennen der Verbindung wird es auch bei Tuto ungültig gemacht. |
 | Keine Einstellungen für Lehrkräfte | Lehrkräfte sehen nur den Ablauf. Konfiguration und Klassenliste setzt die Betreuung zentral ([siehe unten](#für-schul-it-und-betreuung)). |
 
@@ -84,9 +85,10 @@ Zusammenfassung fehlt.
   Umgebungsvariable oder Admin-Modus) und – sobald Tuto `GET /api/v1/roster` anbietet – zusätzlich aus Tuto
   (Klassen der Lehrkraft inkl. Vertretung, nur im Arbeitsspeicher; die App ist dafür vorbereitet). Fehlt sie, warnt das Log. Namen, die nicht
   auf der Liste stehen (z. B. Geschwister, andere Klassen), werden nicht erkannt.
-- **Lokale Daten sind unverschlüsselt.** Audio-Stücke (während der Aufnahme) sowie pseudonymisiertes Transkript
-  und Zusammenfassung (bis zum Senden) liegen im Klartext im Benutzerprofil. Eine Verschlüsselung ist in Arbeit;
-  bis dahin Festplattenverschlüsselung verwenden. Stunden, die nie gesendet werden, bleiben liegen.
+- **Klartext nur im Arbeitsspeicher.** Auf der Platte ist alles verschlüsselt, im Arbeitsspeicher (und ggf. in der
+  Auslagerungsdatei) nicht. Festplattenverschlüsselung und ein Konto ohne Admin-Rechte bleiben deshalb empfohlen.
+- **Abbruch oder Absturz = Daten weg.** Ohne den Schlüssel lässt sich eine unterbrochene Aufnahme nicht mehr
+  auswerten; der nächste Start löscht die Reste. Das ist bewusst so (Datenschutz vor Wiederherstellung).
 - **Was die Lehrkraft eintippt, wird gesendet.** Die Zusammenfassung ist vor dem Senden frei bearbeitbar.
 - **Ollama-Adresse ist konfigurierbar.** Zeigt `ollama_url` auf einen anderen Rechner, verlässt das
   pseudonymisierte Transkript den PC.
@@ -307,5 +309,6 @@ Offen: Signierung (Windows-Code-Signing, macOS-Notarisierung), Installer, `.app`
 | `src/pipeline.rs` | Ablauf nach der Aufnahme, Export |
 | `src/session.rs` | Ein Ordner pro Aufnahme, sicheres Löschen |
 | `src/config.rs` | Einstellungen, `TUTO_MIC_*`-Variablen |
+| `src/crypt.rs` | Verschlüsselung der Sitzungsdaten (XChaCha20-Poly1305, Schlüssel nur im Arbeitsspeicher), Dateiformat |
 | `src/prompts.rs`, `prompts/` | eingebauter + überschreibbarer Prompt |
 | `src/theme.rs`, `src/icons.rs`, `assets/` | Tuto-Design, Schrift Lexend, selbst gezeichnete Icons |

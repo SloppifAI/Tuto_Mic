@@ -3,13 +3,16 @@
 //! Die Segmentierung macht "die letzten X Minuten löschen" einfach: Es werden ganze Segmente
 //! vom Ende entfernt, bis mindestens X Minuten weg sind. Es wird also eher etwas mehr gelöscht
 //! als zu wenig – im Zweifel zugunsten des Datenschutzes.
+//!
+//! Das laufende Segment bleibt im Arbeitsspeicher (10 s ≈ 320 KB) und wird erst beim Abschließen als
+//! verschlüsselte Datei `seg_00001.wav.enc` geschrieben (siehe `crypt`). Unverschlüsseltes Audio berührt nie die
+//! Festplatte; bei einem Absturz fehlt dafür höchstens das letzte, noch offene Segment.
 
 use crate::audio::{StreamResampler, WHISPER_RATE};
+use crate::crypt::{self, Key};
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -42,7 +45,8 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    pub fn start(audio_dir: &Path, segment_secs: u32) -> Result<Self> {
+    /// Startet die Aufnahme. Segmente werden mit `key` verschlüsselt (Schlüssel der Sitzung, nur im Speicher).
+    pub fn start(audio_dir: &Path, segment_secs: u32, key: Key) -> Result<Self> {
         let host = cpal::default_host();
         let device = host.default_input_device().context("Kein Mikrofon gefunden")?;
         let device_name = device
@@ -61,7 +65,7 @@ impl Recorder {
             let shared = shared.clone();
             let segment_frames = u64::from(segment_secs.max(1) * WHISPER_RATE);
             std::thread::spawn(move || {
-                let res = writer_loop(rx, &dir, rate, segment_frames, &shared);
+                let res = writer_loop(rx, &dir, rate, segment_frames, &key, &shared);
                 if let Err(e) = &res {
                     *shared.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!("{e:#}"));
                 }
@@ -177,23 +181,48 @@ where
     Ok(stream)
 }
 
+/// Abgeschlossenes, verschlüsselt gespeichertes Segment.
 struct Segment {
     path: PathBuf,
     frames: u64,
 }
 
+/// Laufendes Segment, nur im Speicher.
 struct OpenSegment {
-    writer: hound::WavWriter<BufWriter<File>>,
-    seg: Segment,
+    path: PathBuf,
+    samples: Vec<i16>,
 }
 
-fn writer_loop(rx: Receiver<Msg>, dir: &Path, rate: u32, segment_frames: u64, shared: &Shared) -> Result<()> {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: WHISPER_RATE,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
+/// WAV-Format der Segmente (16 kHz mono, 16 bit).
+pub(crate) const SEGMENT_SPEC: hound::WavSpec = hound::WavSpec {
+    channels: 1,
+    sample_rate: WHISPER_RATE,
+    bits_per_sample: 16,
+    sample_format: hound::SampleFormat::Int,
+};
+
+/// Endung der Segmentdateien (WAV, verschlüsselt).
+pub(crate) const SEGMENT_SUFFIX: &str = ".wav.enc";
+
+/// Kodiert die Samples als WAV im Speicher und schreibt sie verschlüsselt.
+fn write_segment(path: &Path, samples: &[i16], key: &Key) -> Result<()> {
+    let mut wav = std::io::Cursor::new(Vec::with_capacity(44 + samples.len() * 2));
+    let mut writer = hound::WavWriter::new(&mut wav, SEGMENT_SPEC)?;
+    for &s in samples {
+        writer.write_sample(s)?;
+    }
+    writer.finalize()?;
+    crypt::write(path, key, wav.get_ref())
+}
+
+fn writer_loop(
+    rx: Receiver<Msg>,
+    dir: &Path,
+    rate: u32,
+    segment_frames: u64,
+    key: &Key,
+    shared: &Shared,
+) -> Result<()> {
     let mut resampler = StreamResampler::new(rate)?;
     let mut done: Vec<Segment> = Vec::new();
     let mut open: Option<OpenSegment> = None;
@@ -202,8 +231,11 @@ fn writer_loop(rx: Receiver<Msg>, dir: &Path, rate: u32, segment_frames: u64, sh
 
     let close = |open: &mut Option<OpenSegment>, done: &mut Vec<Segment>| -> Result<()> {
         if let Some(o) = open.take() {
-            o.writer.finalize()?;
-            done.push(o.seg);
+            write_segment(&o.path, &o.samples, key)?;
+            done.push(Segment {
+                path: o.path,
+                frames: o.samples.len() as u64,
+            });
         }
         Ok(())
     };
@@ -214,26 +246,28 @@ fn writer_loop(rx: Receiver<Msg>, dir: &Path, rate: u32, segment_frames: u64, sh
                 buf.clear();
                 resampler.push(&samples, &mut buf)?;
                 for &s in &buf {
-                    if open.is_none() {
-                        let path = dir.join(format!("seg_{next_index:05}.wav"));
+                    let o = open.get_or_insert_with(|| {
+                        let path = dir.join(format!("seg_{next_index:05}{SEGMENT_SUFFIX}"));
                         next_index += 1;
-                        open = Some(OpenSegment {
-                            writer: hound::WavWriter::create(&path, spec)?,
-                            seg: Segment { path, frames: 0 },
-                        });
-                    }
-                    let o = open.as_mut().expect("Segment wurde oben geöffnet");
-                    o.writer
-                        .write_sample((s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)?;
-                    o.seg.frames += 1;
-                    if o.seg.frames >= segment_frames {
+                        OpenSegment {
+                            path,
+                            samples: Vec::with_capacity(segment_frames as usize),
+                        }
+                    });
+                    o.samples.push((s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16);
+                    if o.samples.len() as u64 >= segment_frames {
                         close(&mut open, &mut done)?;
                     }
                 }
             }
             Msg::DeleteLast(d) => {
-                close(&mut open, &mut done)?;
+                // Das offene Segment liegt nur im Speicher: verwerfen statt erst schreiben und dann löschen.
                 let mut remaining = (d.as_secs_f64() * f64::from(WHISPER_RATE)) as u64;
+                if remaining > 0
+                    && let Some(o) = open.take()
+                {
+                    remaining = remaining.saturating_sub(o.samples.len() as u64);
+                }
                 while remaining > 0 {
                     let Some(seg) = done.pop() else { break };
                     std::fs::remove_file(&seg.path)?;
@@ -243,7 +277,7 @@ fn writer_loop(rx: Receiver<Msg>, dir: &Path, rate: u32, segment_frames: u64, sh
             }
             Msg::Finish => break,
         }
-        let total = done.iter().map(|s| s.frames).sum::<u64>() + open.as_ref().map_or(0, |o| o.seg.frames);
+        let total = done.iter().map(|s| s.frames).sum::<u64>() + open.as_ref().map_or(0, |o| o.samples.len() as u64);
         shared.recorded_frames.store(total, Ordering::Relaxed);
     }
     close(&mut open, &mut done)
@@ -265,12 +299,12 @@ mod tests {
     }
 
     /// Schreib-Thread ohne Mikrofon: Samples kommen direkt mit 16 kHz, Segmente sind 1 s lang.
-    fn start_writer(dir: &Path) -> (Sender<Msg>, Arc<Shared>, JoinHandle<Result<()>>) {
+    fn start_writer(dir: &Path, key: &Key) -> (Sender<Msg>, Arc<Shared>, JoinHandle<Result<()>>) {
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared::default());
         let handle = {
-            let (dir, shared) = (dir.to_path_buf(), shared.clone());
-            std::thread::spawn(move || writer_loop(rx, &dir, WHISPER_RATE, SECOND as u64, &shared))
+            let (dir, shared, key) = (dir.to_path_buf(), shared.clone(), key.clone());
+            std::thread::spawn(move || writer_loop(rx, &dir, WHISPER_RATE, SECOND as u64, &key, &shared))
         };
         (tx, shared, handle)
     }
@@ -282,28 +316,57 @@ mod tests {
         }
     }
 
+    fn decrypt_wav(path: &Path, key: &Key) -> hound::WavReader<std::io::Cursor<Vec<u8>>> {
+        hound::WavReader::new(std::io::Cursor::new(crypt::read(path, key).unwrap())).unwrap()
+    }
+
     #[test]
-    fn writes_fixed_length_segments() {
+    fn writes_fixed_length_encrypted_segments() {
         let dir = tempfile::tempdir().unwrap();
-        let (tx, shared, handle) = start_writer(dir.path());
+        let key = Key::generate().unwrap();
+        let (tx, shared, handle) = start_writer(dir.path(), &key);
         send_secs(&tx, 2.5);
         tx.send(Msg::Finish).unwrap();
         handle.join().unwrap().unwrap();
 
-        assert_eq!(files(dir.path()), ["seg_00001.wav", "seg_00002.wav", "seg_00003.wav"]);
+        assert_eq!(
+            files(dir.path()),
+            ["seg_00001.wav.enc", "seg_00002.wav.enc", "seg_00003.wav.enc"]
+        );
         assert_eq!(
             shared.recorded_frames.load(Ordering::Relaxed),
             (2.5 * SECOND as f64) as u64
         );
-        let last = hound::WavReader::open(dir.path().join("seg_00003.wav")).unwrap();
+        let path = dir.path().join("seg_00003.wav.enc");
+        // Auf der Platte liegt kein lesbares WAV, nur mit dem Schlüssel.
+        assert!(hound::WavReader::open(&path).is_err());
+        assert!(crypt::read(&path, &Key::generate().unwrap()).is_err());
+        let last = decrypt_wav(&path, &key);
         assert_eq!(last.duration() as usize, SECOND / 2);
         assert_eq!(last.spec().sample_rate, WHISPER_RATE);
     }
 
     #[test]
+    fn nothing_is_written_before_a_segment_is_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = Key::generate().unwrap();
+        let (tx, shared, handle) = start_writer(dir.path(), &key);
+        send_secs(&tx, 0.5);
+        // Warten, bis der Schreib-Thread die Samples verarbeitet hat.
+        while shared.recorded_frames.load(Ordering::Relaxed) < SECOND as u64 / 2 {
+            std::thread::yield_now();
+        }
+        assert_eq!(files(dir.path()), Vec::<String>::new());
+        tx.send(Msg::Finish).unwrap();
+        handle.join().unwrap().unwrap();
+        assert_eq!(files(dir.path()), ["seg_00001.wav.enc"]);
+    }
+
+    #[test]
     fn delete_last_removes_whole_segments_rounding_up() {
         let dir = tempfile::tempdir().unwrap();
-        let (tx, shared, handle) = start_writer(dir.path());
+        let key = Key::generate().unwrap();
+        let (tx, shared, handle) = start_writer(dir.path(), &key);
         send_secs(&tx, 5.5);
         // 2 s löschen: das offene halbe Segment und zwei volle → 2,5 s weg, eher mehr als zu wenig.
         tx.send(Msg::DeleteLast(Duration::from_secs(2))).unwrap();
@@ -313,15 +376,42 @@ mod tests {
 
         assert_eq!(
             files(dir.path()),
-            ["seg_00001.wav", "seg_00002.wav", "seg_00003.wav", "seg_00007.wav"]
+            [
+                "seg_00001.wav.enc",
+                "seg_00002.wav.enc",
+                "seg_00003.wav.enc",
+                "seg_00007.wav.enc"
+            ]
         );
         assert_eq!(shared.recorded_frames.load(Ordering::Relaxed), 4 * SECOND as u64);
+        // Die übrigen Segmente sind weiterhin mit dem Schlüssel lesbar.
+        let total: u32 = files(dir.path())
+            .iter()
+            .map(|f| decrypt_wav(&dir.path().join(f), &key).duration())
+            .sum();
+        assert_eq!(total as usize, 4 * SECOND);
+    }
+
+    #[test]
+    fn delete_zero_keeps_open_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = Key::generate().unwrap();
+        let (tx, shared, handle) = start_writer(dir.path(), &key);
+        send_secs(&tx, 1.5);
+        tx.send(Msg::DeleteLast(Duration::ZERO)).unwrap();
+        tx.send(Msg::Finish).unwrap();
+        handle.join().unwrap().unwrap();
+        assert_eq!(files(dir.path()), ["seg_00001.wav.enc", "seg_00002.wav.enc"]);
+        assert_eq!(
+            shared.recorded_frames.load(Ordering::Relaxed),
+            (1.5 * SECOND as f64) as u64
+        );
     }
 
     #[test]
     fn delete_more_than_recorded_removes_everything() {
         let dir = tempfile::tempdir().unwrap();
-        let (tx, shared, handle) = start_writer(dir.path());
+        let (tx, shared, handle) = start_writer(dir.path(), &Key::generate().unwrap());
         send_secs(&tx, 1.5);
         tx.send(Msg::DeleteLast(Duration::from_secs(600))).unwrap();
         tx.send(Msg::Finish).unwrap();
