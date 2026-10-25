@@ -97,8 +97,10 @@ jobs:
       # Prüfsummen zum Vergleichen nach dem Download: `sha256sum -c SHA256SUMS.txt`
       - run: sha256sum tuto-mic-* > SHA256SUMS.txt
       # Belegt, dass die Pakete von diesem Workflow aus diesem Repo gebaut wurden:
-      # `gh attestation verify <datei> --repo SloppifAI/Tuto_Mic`
+      # `gh attestation verify <datei> --repo SloppifAI/Tuto_Mic`. Nur für öffentliche Repos verfügbar (ohne
+      # Enterprise-Plan); bei privatem Repo wird der Schritt übersprungen, das Release kommt mit Prüfsummen.
       - uses: actions/attest-build-provenance@v4
+        if: ${{ !github.event.repository.private }}
         with:
           subject-path: tuto-mic-*
       - uses: softprops/action-gh-release@v3
