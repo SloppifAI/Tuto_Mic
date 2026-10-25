@@ -64,6 +64,12 @@ fn main() -> anyhow::Result<()> {
 
     match cli.cmd {
         None => {
+            // Nur eine Instanz: Sonst bekommt die falsche den Rücksprung von Tuto, und zwei Aufnahmen konkurrieren
+            // ums Mikrofon.
+            if deeplink::activate_running() {
+                eprintln!("Tuto Mic läuft bereits – das Fenster wurde nach vorne geholt.");
+                return Ok(());
+            }
             let options = eframe::NativeOptions {
                 viewport: eframe::egui::ViewportBuilder::default()
                     .with_title("Tuto Mic")

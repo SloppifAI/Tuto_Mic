@@ -25,6 +25,14 @@ pub fn is_link(arg: &str) -> bool {
     arg.starts_with("tutoapp:")
 }
 
+/// Nachricht einer zweiten Instanz: „Fenster nach vorne holen“ (Tuto Mic läuft nur einmal).
+pub const ACTIVATE: &str = "tutomic:activate";
+
+/// Läuft Tuto Mic schon, wird es nach vorne geholt und `true` geliefert – dann soll dieser Start enden.
+pub fn activate_running() -> bool {
+    forward(ACTIVATE)
+}
+
 /// Meldet Tuto Mic als Programm für `tutoapp://` an. Kann bei jedem Start aufgerufen werden.
 pub fn register() -> Result<()> {
     let exe = std::env::current_exe().context("Pfad der App nicht ermittelbar")?;
@@ -77,7 +85,9 @@ fn listen_on(addr: SocketAddr, on_link: impl Fn(String) + Send + 'static) -> Res
             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
-            let ok = reader.read_line(&mut line).is_ok() && line.len() <= MAX_LINK_LEN && is_link(line.trim());
+            let ok = reader.read_line(&mut line).is_ok()
+                && line.len() <= MAX_LINK_LEN
+                && (is_link(line.trim()) || line.trim() == ACTIVATE);
             let _ = reader.get_mut().write_all(if ok { b"ok\n" } else { b"nein\n" });
             if ok {
                 on_link(line.trim().to_string());
@@ -238,6 +248,8 @@ mod tests {
             rx.recv_timeout(Duration::from_secs(2)).unwrap(),
             "tutoapp://callback?code=abc&state=s"
         );
+        assert!(forward_to(addr, ACTIVATE).unwrap());
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), ACTIVATE);
         // Alles andere wird abgelehnt.
         assert!(!forward_to(addr, "https://evil.example").unwrap());
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());

@@ -189,12 +189,14 @@ impl TutoPanel {
             .map(|rx| rx.try_iter().collect())
             .unwrap_or_default();
         for link in links {
-            // Die App nach vorne holen: Die Lehrkraft kommt gerade aus dem Browser zurück.
+            // Die App nach vorne holen: Die Lehrkraft kommt aus dem Browser zurück oder hat sie ein zweites Mal gestartet.
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                 egui::UserAttentionType::Informational,
             ));
-            self.handle_link(&link, ctx);
+            if link != deeplink::ACTIVATE {
+                self.handle_link(&link, ctx);
+            }
         }
         while let Ok(event) = self.events.1.try_recv() {
             self.busy = None;
