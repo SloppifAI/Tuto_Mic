@@ -185,32 +185,46 @@ impl TutoMicApp {
 
 /// Grüne Bestätigung mit „OK“. Liefert `true`, wenn sie geschlossen wurde.
 fn success_card(ui: &mut egui::Ui, text: &str) -> bool {
+    let fill = if ui.visuals().dark_mode {
+        Color32::from_rgb(0x02, 0x2c, 0x22)
+    } else {
+        Color32::from_rgb(0xec, 0xfd, 0xf5)
+    };
     let mut closed = false;
     egui::Frame::new()
-        .fill(if ui.visuals().dark_mode {
-            Color32::from_rgb(0x02, 0x2c, 0x22)
-        } else {
-            Color32::from_rgb(0xec, 0xfd, 0xf5)
-        })
+        .fill(fill)
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(egui::Margin::symmetric(16, 12))
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let (dot, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), Sense::hover());
-                ui.painter().circle_filled(dot.center(), 9.0, EMERALD_600);
-                let c = dot.center();
-                let tick = vec![c + vec2(-4.0, 0.0), c + vec2(-1.0, 3.0), c + vec2(4.5, -3.5)];
-                ui.painter().line(tick, Stroke::new(2.0, Color32::WHITE));
-                // Platz für den Knopf rechts frei lassen, sonst läuft der umbrochene Text darunter.
-                let width = (ui.available_width() - 90.0).max(100.0);
-                ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
-                    ui.add(egui::Label::new(RichText::new(text).color(EMERALD_600)).wrap());
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    closed = ui.button("OK").clicked();
-                });
-            });
+            // Zeile selbst anordnen: Icon, Text und Knopf sitzen so sicher auf derselben Mittellinie, auch wenn der
+            // Text umbricht.
+            const ICON: f32 = 18.0;
+            const GAP: f32 = 12.0;
+            let button = vec2(56.0, 34.0);
+            let width = ui.available_width();
+            let galley = ui.painter().layout(
+                text.to_owned(),
+                egui::TextStyle::Body.resolve(ui.style()),
+                EMERALD_600,
+                width - ICON - button.x - 2.0 * GAP,
+            );
+            let height = galley.size().y.max(button.y);
+            let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+            let mid = rect.center().y;
+
+            let c = egui::pos2(rect.left() + ICON / 2.0, mid);
+            ui.painter().circle_filled(c, ICON / 2.0, EMERALD_600);
+            let tick = vec![c + vec2(-4.0, 0.0), c + vec2(-1.0, 3.0), c + vec2(4.5, -3.5)];
+            ui.painter().line(tick, Stroke::new(2.0, Color32::WHITE));
+
+            let text_pos = egui::pos2(rect.left() + ICON + GAP, mid - galley.size().y / 2.0);
+            ui.painter().galley(text_pos, galley.clone(), EMERALD_600);
+            // Für Screenreader zusätzlich als Text bekannt machen.
+            ui.interact(rect, ui.scope_id().with("success"), Sense::hover())
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text));
+
+            let button_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - button.x / 2.0, mid), button);
+            closed = ui.put(button_rect, egui::Button::new("OK")).clicked();
         });
     ui.add_space(12.0);
     closed
@@ -237,7 +251,7 @@ fn message_card(ui: &mut egui::Ui, text: &str, error: bool) -> bool {
         .inner_margin(egui::Margin::symmetric(16, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 // Platz für den Knopf rechts frei lassen, sonst läuft der umbrochene Text darunter.
                 let width = (ui.available_width() - 90.0).max(100.0);
                 ui.allocate_ui(egui::vec2(width, 0.0), |ui| {

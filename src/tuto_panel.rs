@@ -430,7 +430,7 @@ impl TutoPanel {
                 self.confirm_overwrite = false;
             }
         }
-        self.ui_new_lesson(ui, ctx);
+        self.ui_new_lesson(ui, summary, ctx);
 
         ui.add_space(8.0);
         let Some(summary) = summary.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -491,11 +491,16 @@ impl TutoPanel {
         }
     }
 
-    fn ui_new_lesson(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui_new_lesson(&mut self, ui: &mut egui::Ui, summary: Option<&str>, ctx: &egui::Context) {
         if !self.form.open {
             if ui.button("+ Neue Stunde anlegen").clicked() {
                 self.form.open = true;
                 self.form.class_id = self.classes.first().map(|c| c.id);
+                // Fach und Thema aus der Überschrift der Zusammenfassung vorschlagen.
+                if let Some((subject, topic)) = summary.and_then(heading_subject_topic) {
+                    self.form.subject = subject;
+                    self.form.topic = topic;
+                }
             }
             return;
         }
@@ -611,6 +616,20 @@ impl TutoPanel {
     }
 }
 
+/// Fach und Thema aus der ersten Überschrift der Zusammenfassung, Format laut Prompt:
+/// `# [Fach], Klasse [Stufe]: [Thema der Stunde]`. Fehlt der Doppelpunkt, gibt es keinen Vorschlag.
+fn heading_subject_topic(summary: &str) -> Option<(String, String)> {
+    let heading = summary
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("# "))?
+        .trim_start_matches("# ");
+    let (head, topic) = heading.split_once(':')?;
+    let subject = head.split(',').next()?.trim();
+    let topic = topic.trim();
+    (!subject.is_empty() && !topic.is_empty()).then(|| (subject.to_string(), topic.to_string()))
+}
+
 /// Hinweis in Bernstein: Achtung, aber kein Fehler.
 fn warning(ui: &mut egui::Ui, text: &str) {
     let (fill, fg) = if ui.visuals().dark_mode {
@@ -698,5 +717,28 @@ impl TutoPanel {
             selected,
             ..Self::offline()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subject_and_topic_from_heading() {
+        let summary = "# Mathematik, Klasse 7: Prozentrechnung mit eigenen Daten der Klasse\n\n## Lernziele\n- …";
+        assert_eq!(
+            heading_subject_topic(summary),
+            Some((
+                "Mathematik".into(),
+                "Prozentrechnung mit eigenen Daten der Klasse".into()
+            ))
+        );
+        assert_eq!(
+            heading_subject_topic("\n# Geschichte: Weimarer Republik\n"),
+            Some(("Geschichte".into(), "Weimarer Republik".into()))
+        );
+        assert_eq!(heading_subject_topic("## Lernziele\n- …"), None);
+        assert_eq!(heading_subject_topic("# Nur eine Überschrift"), None);
     }
 }
