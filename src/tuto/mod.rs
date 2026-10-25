@@ -172,6 +172,45 @@ impl Client {
         resp.body_mut().read_json().context("Unerwartete Antwort von Tuto")
     }
 
+    /// Fächer, die an der Schule in Stunden vorkommen (alphabetisch). Beim Anlegen bleibt das Fach Freitext.
+    pub fn subjects(&self) -> Result<Vec<String>> {
+        let resp = self
+            .agent
+            .get(self.url("/subjects"))
+            .header("Accept", "application/json")
+            .header("Authorization", self.auth())
+            .call();
+        Ok(self.json::<Data<Vec<String>>>(resp)?.data)
+    }
+
+    /// Namen der Schüler:innen in den Klassen der Lehrkraft (inkl. aktueller Vertretung), nur für die lokale
+    /// Pseudonymisierung. `None`, wenn Tuto das (noch) nicht anbietet oder das Token das Recht `roster:read`
+    /// nicht hat – dann gilt nur die lokale Klassenliste.
+    pub fn roster(&self) -> Result<Option<Vec<String>>> {
+        #[derive(Deserialize)]
+        struct ClassRoster {
+            students: Vec<String>,
+        }
+        let resp = self
+            .agent
+            .get(self.url("/roster"))
+            .header("Accept", "application/json")
+            .header("Authorization", self.auth())
+            .call();
+        match self.json::<Data<Vec<ClassRoster>>>(resp) {
+            Ok(data) => Ok(Some(data.data.into_iter().flat_map(|c| c.students).collect())),
+            Err(e)
+                if matches!(
+                    e.downcast_ref::<ApiError>(),
+                    Some(ApiError::Forbidden(_) | ApiError::NotFound(_))
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Klassen, in denen die Lehrkraft Stunden anlegen darf.
     pub fn classes(&self) -> Result<Vec<SchoolClass>> {
         #[derive(Deserialize)]
@@ -392,6 +431,39 @@ mod tests {
     fn logout_accepts_already_invalid_token() {
         let (url, _server) = serve_once(401, r#"{"message":"Unauthenticated."}"#);
         client(&url).logout().unwrap();
+    }
+
+    #[test]
+    fn lists_subjects() {
+        let (url, server) = serve_once(200, r#"{"data":["Biologie","Mathe"]}"#);
+        assert_eq!(client(&url).subjects().unwrap(), ["Biologie", "Mathe"]);
+        assert!(server.join().unwrap().head.starts_with("GET /api/v1/subjects "));
+    }
+
+    #[test]
+    fn roster_flattens_classes() {
+        let (url, _server) = serve_once(
+            200,
+            r#"{"data":[{"class":{"id":3,"name":"7b"},"students":["Lena Wagner","Tom Becker"]},{"class":{"id":4,"name":"7a"},"students":["Jörg Özdemir"]}]}"#,
+        );
+        assert_eq!(
+            client(&url).roster().unwrap(),
+            Some(vec![
+                "Lena Wagner".to_string(),
+                "Tom Becker".into(),
+                "Jörg Özdemir".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn roster_unavailable_is_not_an_error() {
+        for status in [403, 404] {
+            let (url, _server) = serve_once(status, r#"{"message":"nein"}"#);
+            assert_eq!(client(&url).roster().unwrap(), None, "Status {status}");
+        }
+        let (url, _server) = serve_once(401, r#"{"message":"Unauthenticated."}"#);
+        assert!(client(&url).roster().is_err());
     }
 
     #[test]

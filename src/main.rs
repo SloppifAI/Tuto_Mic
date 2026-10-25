@@ -111,6 +111,8 @@ fn process(file: PathBuf, no_llm: bool) -> anyhow::Result<()> {
         summary_prompt: prompts::load(),
         skip_llm: no_llm,
         keep_original_transcript: true,
+        // Ist die App verbunden, nutzt auch die CLI die Klassenliste aus Tuto.
+        tuto: tuto::store::load().ok().flatten(),
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let printer = std::thread::spawn(move || {

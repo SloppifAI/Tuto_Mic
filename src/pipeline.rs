@@ -70,12 +70,15 @@ impl Source {
     }
 }
 
+#[derive(Clone)]
 pub struct Options {
     pub cfg: Config,
     pub summary_prompt: String,
     pub skip_llm: bool,
     /// Original-Transkript mit Klarnamen als `transcript.txt` behalten (nur Admin-Modus/CLI).
     pub keep_original_transcript: bool,
+    /// Tuto-Zugang, um vor der Transkription die Klassenliste zu laden (nur im Arbeitsspeicher).
+    pub tuto: Option<crate::tuto::Session>,
 }
 
 pub enum Progress {
@@ -134,6 +137,7 @@ fn run_in(
         notify();
     };
     let mut log = Vec::new();
+    let opts = &with_tuto_roster(opts, &step, &mut log);
 
     let (dir, transcript, audio_secs) = match source {
         Source::Transcript(path) => {
@@ -185,6 +189,29 @@ fn run_in(
             Err(e)
         }
     }
+}
+
+/// Ergänzt die lokale Klassenliste um die Namen aus Tuto (Klassen der Lehrkraft), nur für diesen Lauf im
+/// Arbeitsspeicher. Ohne Zugang oder wenn Tuto die Liste nicht anbietet, bleibt es bei der lokalen Liste.
+fn with_tuto_roster(opts: &Options, step: &dyn Fn(String), log: &mut Vec<String>) -> Options {
+    let mut opts = opts.clone();
+    let Some(session) = opts.tuto.clone() else { return opts };
+    step("Klassenliste aus Tuto laden …".into());
+    match crate::tuto::Client::new(session).roster() {
+        Ok(Some(names)) => {
+            log.push(format!("Klassenliste aus Tuto: {} Namen", names.len()));
+            let mut seen: std::collections::HashSet<String> =
+                opts.cfg.class_list.iter().map(|n| n.to_lowercase()).collect();
+            opts.cfg
+                .class_list
+                .extend(names.into_iter().filter(|n| seen.insert(n.to_lowercase())));
+        }
+        Ok(None) => log.push("Klassenliste aus Tuto nicht verfügbar – nur die lokale Liste".into()),
+        Err(e) => log.push(format!(
+            "Warnung: Klassenliste aus Tuto nicht ladbar ({e:#}) – nur die lokale Liste"
+        )),
+    }
+    opts
 }
 
 fn import_label(path: &Path) -> Option<&str> {
@@ -396,6 +423,7 @@ mod tests {
             summary_prompt: "Fasse zusammen:\n{{TRANSKRIPT}}\n".into(),
             skip_llm: false,
             keep_original_transcript: false,
+            tuto: None,
         }
     }
 
@@ -534,6 +562,37 @@ mod tests {
         .unwrap_err();
         assert!(err.is::<Cancelled>(), "{err:#}");
         assert!(start.elapsed() < Duration::from_secs(3), "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn names_from_tuto_roster_are_pseudonymized() {
+        let (url, server) = serve_once(
+            200,
+            r#"{"data":[{"class":{"id":3,"name":"7b"},"students":["Tom Becker","lena wagner"]}]}"#,
+        );
+        let sessions = tempfile::tempdir().unwrap();
+        let path = sessions.path().join("stunde.txt");
+        std::fs::write(&path, "Lena Wagner und Tom Becker rechnen vor. Dann Tom.\n").unwrap();
+        let opts = Options {
+            skip_llm: true,
+            tuto: Some(crate::tuto::Session {
+                base_url: url,
+                token: "t".into(),
+                expires_at: String::new(),
+                user_name: String::new(),
+                role: "teacher".into(),
+            }),
+            ..options(NO_OLLAMA)
+        };
+        let outcome = run_source(sessions.path(), &Source::Transcript(path), &opts).unwrap();
+        assert!(server.join().unwrap().head.starts_with("GET /api/v1/roster "));
+        assert!(!outcome.transcript_anon.contains("Tom"), "{}", outcome.transcript_anon);
+        assert!(!outcome.transcript_anon.contains("Lena"), "{}", outcome.transcript_anon);
+        assert!(
+            outcome.log.iter().any(|l| l == "Klassenliste aus Tuto: 2 Namen"),
+            "{:?}",
+            outcome.log
+        );
     }
 
     fn run_source(sessions: &Path, source: &Source, opts: &Options) -> Result<Outcome> {

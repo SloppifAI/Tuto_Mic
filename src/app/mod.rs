@@ -209,6 +209,7 @@ impl TutoMicApp {
             summary_prompt: prompts::load(),
             skip_llm: false,
             keep_original_transcript: self.mode.admin,
+            tuto: self.tuto.session().cloned(),
         };
         let ctx = ctx.clone();
         pipeline::spawn(source, opts, tx, Arc::new(move || ctx.request_repaint()), abort.clone());

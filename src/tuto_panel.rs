@@ -19,6 +19,7 @@ enum Event {
     Loaded {
         lessons: Vec<Lesson>,
         classes: Vec<SchoolClass>,
+        subjects: Vec<String>,
     },
     Created(Lesson),
     Sent(Lesson),
@@ -69,6 +70,8 @@ pub struct TutoPanel {
     busy: Option<String>,
     lessons: Vec<Lesson>,
     classes: Vec<SchoolClass>,
+    /// Fächer aus Tuto für die Auswahl beim Anlegen.
+    subjects: Vec<String>,
     loaded: bool,
     selected: Option<u64>,
     form: NewLessonForm,
@@ -106,6 +109,11 @@ impl TutoPanel {
     }
 
     /// Liefert einmalig die Stunde, an die gerade erfolgreich gesendet wurde.
+    /// Zugang für Hintergrundaufgaben der App (z. B. Klassenliste vor der Transkription laden).
+    pub fn session(&self) -> Option<&Session> {
+        self.session.as_ref()
+    }
+
     pub fn take_sent(&mut self) -> Option<Lesson> {
         let sent = self.sent.take();
         if sent.is_some() {
@@ -126,6 +134,7 @@ impl TutoPanel {
             busy: None,
             lessons: Vec::new(),
             classes: Vec::new(),
+            subjects: Vec::new(),
             loaded: false,
             selected: None,
             form: NewLessonForm::default(),
@@ -187,7 +196,12 @@ impl TutoPanel {
                     self.session = Some(session);
                     self.loaded = false;
                 }
-                Event::Loaded { lessons, classes } => {
+                Event::Loaded {
+                    lessons,
+                    classes,
+                    subjects,
+                } => {
+                    self.subjects = subjects;
                     self.selected = self.selected.filter(|id| lessons.iter().any(|l| l.id == *id));
                     if self.selected.is_none() && lessons.len() == 1 {
                         self.selected = Some(lessons[0].id);
@@ -408,8 +422,16 @@ impl TutoPanel {
             self.client_job(
                 "Lade Stunden …",
                 ctx,
-                move |c| Ok((c.lessons_on(today)?, c.classes()?)),
-                |(lessons, classes)| Event::Loaded { lessons, classes },
+                move |c| {
+                    // Die Fächerliste ist nur ein Komfort: Fehlt sie (ältere Tuto-Version), geht es ohne weiter.
+                    let subjects = c.subjects().unwrap_or_default();
+                    Ok((c.lessons_on(today)?, c.classes()?, subjects))
+                },
+                |(lessons, classes, subjects)| Event::Loaded {
+                    lessons,
+                    classes,
+                    subjects,
+                },
             );
             return;
         }
@@ -572,7 +594,9 @@ impl TutoPanel {
 
     /// Fach aus Vorschlägen wählen (gängige Fächer und die aus den eigenen Tuto-Stunden) oder frei eingeben.
     fn subject_picker(&mut self, ui: &mut egui::Ui, label: egui::Id) {
-        let mut subjects: Vec<String> = self.lessons.iter().map(|l| l.subject.clone()).collect();
+        // Zuerst die Fächer der Schule aus Tuto, dann die der heutigen Stunden, dann gängige Fächer.
+        let mut subjects: Vec<String> = self.subjects.clone();
+        subjects.extend(self.lessons.iter().map(|l| l.subject.clone()));
         subjects.extend(COMMON_SUBJECTS.iter().map(|s| (*s).to_string()));
         let mut seen = std::collections::HashSet::new();
         subjects.retain(|s| seen.insert(s.to_lowercase()));
