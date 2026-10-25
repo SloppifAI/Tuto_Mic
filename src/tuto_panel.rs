@@ -461,6 +461,7 @@ impl TutoPanel {
     /// und nach der Uhrzeit neu vorbelegen statt die alte Wahl stehen zu lassen.
     pub fn reset_plan(&mut self) {
         self.plan = Plan::Undecided;
+        self.form = NewLessonForm::default();
         self.plan_applied = false;
         self.selected = None;
         self.lessons_state = LessonsState::Needed;
@@ -528,6 +529,14 @@ impl TutoPanel {
                 let lesson = self.lessons.iter().find(|l| l.id == *id)?;
                 (lesson.class.name.clone(), lesson.subject.clone())
             }
+            Plan::New => {
+                let class = self.classes.iter().find(|c| Some(c.id) == self.form.class_id)?;
+                let subject = self.form.subject.trim();
+                if subject.is_empty() {
+                    return None;
+                }
+                (class.name.clone(), subject.to_string())
+            }
             Plan::Undecided | Plan::Later => return None,
         };
         Some(format!("Fach: {subject}, Klasse: {class}"))
@@ -562,6 +571,7 @@ impl TutoPanel {
                 format!("{} · {}: {}", lesson.class.name, lesson.subject, lesson.topic),
             ));
         }
+        options.push((Plan::New, "Neue Stunde …".into()));
         options.push((Plan::Later, "Später wählen".into()));
         let current = options
             .iter()
@@ -576,6 +586,15 @@ impl TutoPanel {
                 .show_ui(ui, |ui| {
                     for (plan, text) in options {
                         if ui.selectable_label(self.plan == plan, text).clicked() {
+                            if plan == Plan::New && !self.form.open {
+                                self.form = NewLessonForm {
+                                    open: true,
+                                    class_id: self.classes.first().map(|c| c.id),
+                                    ..NewLessonForm::default()
+                                };
+                            } else if plan != Plan::New {
+                                self.form = NewLessonForm::default();
+                            }
                             self.plan = plan;
                             self.plan_applied = false;
                         }
@@ -584,7 +603,26 @@ impl TutoPanel {
                 .response
                 .labelled_by(label.id);
         });
-        if self.timetable.is_none() {
+        if self.plan == Plan::New {
+            ui.add_space(4.0);
+            egui::Grid::new("plan_new_lesson")
+                .num_columns(2)
+                .spacing([12.0, 8.0])
+                .show(ui, |ui| {
+                    let l = ui.label("Klasse");
+                    self.class_picker(ui, l.id);
+                    ui.end_row();
+                    let l = ui.label("Fach");
+                    self.subject_picker(ui, l.id);
+                    ui.end_row();
+                });
+            ui.label(
+                RichText::new("Die Stunde wird beim Senden in Tuto angelegt, das Thema kommt aus der Zusammenfassung.")
+                    .small()
+                    .color(theme::weak_text(ui)),
+            );
+        }
+        if self.timetable.is_none() && self.plan != Plan::New {
             ui.label(
                 RichText::new("Ohne Stundenplan in Tuto wird keine Stunde vorgeschlagen.")
                     .small()
@@ -603,6 +641,16 @@ impl TutoPanel {
         let lesson_id = match &self.plan {
             Plan::Lesson(id) => Some(*id),
             Plan::Slot(entry) => entry.lesson_id,
+            Plan::New => {
+                // Klasse und Fach stehen schon im Formular; das Thema kommt aus der Zusammenfassung.
+                self.form.open = true;
+                if self.form.topic.trim().is_empty()
+                    && let Some((_, topic)) = summary.and_then(heading_subject_topic)
+                {
+                    self.form.topic = topic;
+                }
+                return;
+            }
             Plan::Undecided | Plan::Later => return,
         };
         if let Some(id) = lesson_id.filter(|id| self.lessons.iter().any(|l| l.id == *id)) {
@@ -735,20 +783,7 @@ impl TutoPanel {
                     .spacing([12.0, 8.0])
                     .show(ui, |ui| {
                         let class_label = ui.label("Klasse");
-                        let current = self
-                            .classes
-                            .iter()
-                            .find(|c| Some(c.id) == self.form.class_id)
-                            .map_or("–", |c| c.name.as_str());
-                        egui::ComboBox::from_id_salt("class")
-                            .selected_text(current)
-                            .show_ui(ui, |ui| {
-                                for class in &self.classes {
-                                    ui.selectable_value(&mut self.form.class_id, Some(class.id), &class.name);
-                                }
-                            })
-                            .response
-                            .labelled_by(class_label.id);
+                        self.class_picker(ui, class_label.id);
                         ui.end_row();
                         let l = ui.label("Fach");
                         self.subject_picker(ui, l.id);
@@ -783,6 +818,23 @@ impl TutoPanel {
                     }
                 });
             });
+    }
+
+    fn class_picker(&mut self, ui: &mut egui::Ui, label: egui::Id) {
+        let current = self
+            .classes
+            .iter()
+            .find(|c| Some(c.id) == self.form.class_id)
+            .map_or("–", |c| c.name.as_str());
+        egui::ComboBox::from_id_salt("class")
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for class in &self.classes {
+                    ui.selectable_value(&mut self.form.class_id, Some(class.id), &class.name);
+                }
+            })
+            .response
+            .labelled_by(label);
     }
 
     /// Fach aus Vorschlägen wählen (gängige Fächer und die aus den eigenen Tuto-Stunden) oder frei eingeben.
@@ -856,6 +908,9 @@ enum Plan {
     Slot(Box<TimetableEntry>),
     /// Stunde aus Tuto ohne Stundenplan-Eintrag.
     Lesson(u64),
+    /// Neue Stunde, Klasse und Fach stehen in `TutoPanel::form`. Angelegt wird sie erst beim Senden, damit bei
+    /// verworfener Aufnahme keine leere Stunde in Tuto zurückbleibt.
+    New,
     Later,
 }
 
@@ -924,6 +979,13 @@ impl TutoPanel {
             custom_subject: false,
             topic: String::new(),
         };
+        panel
+    }
+
+    /// Startseite mit „Neue Stunde …“ als Wahl vor der Aufnahme.
+    pub fn demo_plan_new_lesson() -> Self {
+        let mut panel = Self::demo_new_lesson(Vec::new());
+        panel.plan = Plan::New;
         panel
     }
 
@@ -1046,5 +1108,24 @@ mod plan_tests {
         assert_eq!(panel.planned_context().as_deref(), Some("Fach: Mathematik, Klasse: 7b"));
         panel.plan = Plan::Later;
         assert_eq!(panel.planned_context(), None);
+    }
+
+    #[test]
+    fn new_lesson_planned_before_recording() {
+        let mut panel = TutoPanel::demo_new_lesson(Vec::new());
+        panel.plan = Plan::New;
+        assert_eq!(panel.planned_context().as_deref(), Some("Fach: Mathematik, Klasse: 7b"));
+
+        // Beim Senden: Formular offen, Thema aus der Zusammenfassung, angelegt ist noch nichts.
+        panel.form.open = false;
+        panel.apply_plan(Some("# Mathematik, Klasse 7: Prozentrechnung\n- …"));
+        assert!(panel.form.open);
+        assert_eq!(panel.form.topic, "Prozentrechnung");
+        assert_eq!(panel.selected, None);
+
+        panel.form.subject.clear();
+        assert_eq!(panel.planned_context(), None, "ohne Fach kein halber Kontext");
+        panel.reset_plan();
+        assert_eq!((panel.plan, panel.form.open), (Plan::Undecided, false));
     }
 }
