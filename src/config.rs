@@ -89,17 +89,37 @@ impl Config {
     /// oder Variable ist ein Fehler und wird nicht still ersetzt – sonst ginge unbemerkt die Klassenliste und damit
     /// die Pseudonymisierung verloren.
     pub fn load() -> Result<Self> {
-        let mut cfg = Self::load_from(&Self::path())?;
+        let path = Self::path();
+        let key = match crate::crypt::config_key() {
+            Ok(key) => {
+                // Alte Klartext-Konfiguration (mit Klassenliste) einmalig verschlüsseln und löschen.
+                match crate::crypt::migrate_protected(&path, &key) {
+                    Ok(true) => log::info!("Konfiguration verschlüsselt"),
+                    Ok(false) => {}
+                    Err(e) => log::warn!("Konfiguration nicht verschlüsselbar: {e:#}"),
+                }
+                Some(key)
+            }
+            Err(e) => {
+                log::warn!("{e:#}");
+                None
+            }
+        };
+        let mut cfg = Self::load_from(&path, key.as_ref())?;
         cfg.apply_env(|name| std::env::var(name).ok())?;
         Ok(cfg)
     }
 
     /// Schreibt die Datei (nur aus dem Admin-Modus). Umgebungsvariablen haben beim nächsten Laden weiter Vorrang.
     pub fn save(&self) -> Result<()> {
-        let path = Self::path();
-        std::fs::create_dir_all(path.parent().expect("Konfigurationspfad liegt in einem Verzeichnis"))?;
-        std::fs::write(&path, serde_json::to_string_pretty(self)?)
-            .with_context(|| format!("Konfiguration nicht schreibbar: {}", path.display()))
+        let key = crate::crypt::config_key()?;
+        self.save_to(&Self::path(), &key)
+    }
+
+    /// Verschlüsselt nach `<path>.enc`; eine alte Klartext-Datei wird entfernt.
+    fn save_to(&self, path: &Path, key: &crate::crypt::Key) -> Result<()> {
+        crate::crypt::write_protected(path, key, &serde_json::to_string_pretty(self)?)
+            .context("Konfiguration nicht speicherbar")
     }
 
     /// Überschreibt Werte aus `TUTO_MIC_*`-Variablen (`get` liefert den Wert einer Variable).
@@ -129,11 +149,13 @@ impl Config {
         Ok(())
     }
 
-    fn load_from(path: &Path) -> Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(s) => serde_json::from_str(&s).with_context(|| format!("Konfiguration fehlerhaft: {}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e).with_context(|| format!("Konfiguration nicht lesbar: {}", path.display())),
+    /// Liest `<path>.enc` (mit `key`) oder eine alte Klartext-Datei `<path>`; fehlt beides, gelten die Standardwerte.
+    fn load_from(path: &Path, key: Option<&crate::crypt::Key>) -> Result<Self> {
+        match crate::crypt::read_protected(path, key).context("Konfiguration nicht lesbar")? {
+            Some(s) => {
+                serde_json::from_str(&s).with_context(|| format!("Konfiguration fehlerhaft: {}", path.display()))
+            }
+            None => Ok(Self::default()),
         }
     }
 }
@@ -155,14 +177,14 @@ mod tests {
     fn load_distinguishes_missing_and_broken_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        assert_eq!(Config::load_from(&path).unwrap().language, "de");
+        assert_eq!(Config::load_from(&path, None).unwrap().language, "de");
 
         std::fs::write(&path, r#"{"class_list": ["Lena Wagner""#).unwrap();
-        let err = Config::load_from(&path).unwrap_err();
+        let err = Config::load_from(&path, None).unwrap_err();
         assert!(format!("{err:#}").contains("Konfiguration fehlerhaft"), "{err:#}");
 
         std::fs::write(&path, r#"{"segment_secs": "zehn"}"#).unwrap();
-        assert!(Config::load_from(&path).is_err());
+        assert!(Config::load_from(&path, None).is_err());
     }
 
     #[test]
@@ -190,6 +212,35 @@ mod tests {
             .apply_env(|name| (name == "TUTO_MIC_SUMMARY_LIMIT").then(|| "viel".to_string()))
             .unwrap_err();
         assert!(err.to_string().contains("TUTO_MIC_SUMMARY_LIMIT"), "{err}");
+    }
+
+    #[test]
+    fn saves_encrypted_and_migrates_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let key = crate::crypt::Key::generate().unwrap();
+        let cfg = Config {
+            class_list: vec!["Lena Wagner".into()],
+            ..Config::default()
+        };
+        cfg.save_to(&path, &key).unwrap();
+        assert!(!path.exists(), "kein Klartext");
+        let enc = crate::crypt::encrypted_path(&path);
+        assert!(!String::from_utf8_lossy(&std::fs::read(&enc).unwrap()).contains("Lena"));
+        assert_eq!(
+            Config::load_from(&path, Some(&key)).unwrap().class_list,
+            ["Lena Wagner"]
+        );
+        // Ohne Schlüssel bzw. mit falschem Schlüssel nicht lesbar – kein stiller Rückfall auf Standardwerte.
+        assert!(Config::load_from(&path, None).is_err());
+        assert!(Config::load_from(&path, Some(&crate::crypt::Key::generate().unwrap())).is_err());
+
+        // Alte Klartext-Datei wird umgewandelt und gelöscht.
+        std::fs::remove_file(&enc).unwrap();
+        std::fs::write(&path, r#"{"class_list": ["Tom Becker"]}"#).unwrap();
+        assert!(crate::crypt::migrate_protected(&path, &key).unwrap());
+        assert!(!path.exists());
+        assert_eq!(Config::load_from(&path, Some(&key)).unwrap().class_list, ["Tom Becker"]);
     }
 
     #[test]

@@ -169,7 +169,15 @@ fn info() -> anyhow::Result<()> {
         state(&cfg.vad_model)
     );
     let file = config::Config::path();
-    println!("\nKonfiguration:   {} ({})", file.display(), state(&file));
+    let enc = tuto_mic::crypt::encrypted_path(&file);
+    let stored = if enc.is_file() {
+        "verschlüsselt"
+    } else if file.is_file() {
+        "Klartext"
+    } else {
+        "nicht vorhanden, Standardwerte"
+    };
+    println!("\nKonfiguration:   {} ({stored})", enc.display());
     println!("  Tuto:          {}", cfg.tuto_url);
     println!("  Höchstlänge:   {} Zeichen", cfg.summary_limit);
     println!("  Ollama:        {} ({})", cfg.ollama_url, cfg.ollama_model);

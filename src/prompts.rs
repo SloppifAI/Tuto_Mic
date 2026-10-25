@@ -1,6 +1,6 @@
-//! Der Zusammenfassungs-Prompt ist in die App eingebaut (`prompts/summary.md`) und lässt sich zum Testen
-//! überschreiben: im Admin-Modus über den Editor, oder per Datei `summary.md` in `<config_dir>/prompts/`
-//! bzw. `$TUTO_MIC_PROMPTS`.
+//! Der Zusammenfassungs-Prompt ist in die App eingebaut (`prompts/summary.md`) und lässt sich im Admin-Modus über
+//! den Editor überschreiben. Die eigene Fassung liegt verschlüsselt in `<config_dir>/prompts/summary.md.enc` (bzw.
+//! `$TUTO_MIC_PROMPTS`), damit sie niemand unbemerkt ändert oder mitliest.
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -20,12 +20,28 @@ fn override_path() -> PathBuf {
 }
 
 pub fn is_overridden() -> bool {
-    override_path().is_file()
+    let path = override_path();
+    path.is_file() || crate::crypt::encrypted_path(&path).is_file()
 }
 
-/// Überschriebener Prompt, falls vorhanden, sonst der eingebaute.
+/// Überschriebener Prompt, falls vorhanden, sonst der eingebaute. Der eigene Prompt liegt verschlüsselt (Schlüssel
+/// im Schlüsselbund); eine alte Klartext-Datei wird dabei umgewandelt. Ist er unlesbar, gilt der eingebaute.
 pub fn load() -> String {
-    std::fs::read_to_string(override_path()).unwrap_or_else(|_| BUILTIN.to_string())
+    let path = override_path();
+    let key = crate::crypt::config_key().ok();
+    if let Some(key) = &key
+        && let Err(e) = crate::crypt::migrate_protected(&path, key)
+    {
+        log::warn!("Prompt nicht verschlüsselbar: {e:#}");
+    }
+    match crate::crypt::read_protected(&path, key.as_ref()) {
+        Ok(Some(text)) => text,
+        Ok(None) => BUILTIN.to_string(),
+        Err(e) => {
+            log::warn!("Eigener Prompt nicht lesbar, es gilt der eingebaute: {e:#}");
+            BUILTIN.to_string()
+        }
+    }
 }
 
 /// Setzt das Transkript in den Prompt ein.
@@ -38,19 +54,12 @@ pub fn render(prompt: &str, transcript: &str) -> String {
 }
 
 pub fn save(text: &str) -> Result<()> {
-    let path = override_path();
-    std::fs::create_dir_all(override_dir())
-        .and_then(|()| std::fs::write(&path, text))
-        .with_context(|| format!("Prompt nicht speicherbar: {}", path.display()))?;
-    Ok(())
+    let key = crate::crypt::config_key()?;
+    crate::crypt::write_protected(&override_path(), &key, text).context("Prompt nicht speicherbar")
 }
 
 pub fn reset() -> Result<()> {
-    let path = override_path();
-    if path.exists() {
-        std::fs::remove_file(&path).with_context(|| format!("Prompt nicht löschbar: {}", path.display()))?;
-    }
-    Ok(())
+    crate::crypt::remove_protected(&override_path()).context("Prompt nicht löschbar")
 }
 
 #[cfg(test)]

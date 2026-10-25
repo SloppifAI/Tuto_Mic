@@ -52,6 +52,19 @@ impl Key {
         Ok(Self(key))
     }
 
+    /// Schlüssel aus gespeicherten Bytes (z. B. aus dem Schlüsselbund).
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let array: [u8; KEY_LEN] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Schlüssel hat die falsche Länge"))?;
+        Ok(Self(Box::new(array)))
+    }
+
+    /// Die Schlüssel-Bytes, nur um sie im Schlüsselbund abzulegen.
+    fn as_bytes(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
     fn cipher(&self) -> XChaCha20Poly1305 {
         XChaCha20Poly1305::new(<&chacha20poly1305::Key>::from(&*self.0))
     }
@@ -120,6 +133,86 @@ pub fn decrypt(key: &Key, data: &[u8]) -> Result<Vec<u8>> {
             },
         )
         .map_err(|_| anyhow::anyhow!("Entschlüsselung fehlgeschlagen: falscher Schlüssel oder Datei beschädigt"))
+}
+
+/// Dauerhafter Schlüssel für die Konfiguration (Klassenliste, Prompt, Einstellungen). Liegt im Schlüsselbund des
+/// Betriebssystems, den die Anmeldung am Rechner entsperrt; wird beim ersten Bedarf zufällig erzeugt. Anders als
+/// der Sitzungsschlüssel überdauert er Neustarts.
+pub fn config_key() -> Result<Key> {
+    static CACHE: std::sync::OnceLock<Result<Key, String>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| load_or_create_config_key().map_err(|e| format!("{e:#}")))
+        .clone()
+        .map_err(|e| anyhow::anyhow!(e))
+}
+
+fn load_or_create_config_key() -> Result<Key> {
+    let entry =
+        keyring::Entry::new("tuto-mic", "config-key").context("Schlüsselbund des Betriebssystems nicht verfügbar")?;
+    match entry.get_secret() {
+        Ok(bytes) => Key::from_bytes(&bytes),
+        Err(keyring::Error::NoEntry) => {
+            let key = Key::generate()?;
+            entry
+                .set_secret(key.as_bytes())
+                .context("Schlüssel für die Konfiguration nicht im Schlüsselbund speicherbar")?;
+            Ok(key)
+        }
+        Err(e) => Err(e).context("Schlüsselbund nicht lesbar"),
+    }
+}
+
+/// Liest eine geschützte Textdatei: bevorzugt `<path>.enc`, sonst eine alte Klartext-Datei `<path>`. `None`, wenn
+/// keine existiert. Ohne Schlüssel (Schlüsselbund fehlt) ist nur Klartext lesbar.
+pub fn read_protected(path: &Path, key: Option<&Key>) -> Result<Option<String>> {
+    let enc = encrypted_path(path);
+    if enc.exists() {
+        let key = key.context(
+            "Konfiguration ist verschlüsselt, aber der Schlüsselbund des Betriebssystems ist nicht verfügbar",
+        )?;
+        let bytes = read(&enc, key)?;
+        return String::from_utf8(bytes)
+            .map(Some)
+            .context("Entschlüsselte Datei ist kein Text");
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("Datei nicht lesbar: {}", path.display())),
+    }
+}
+
+/// Schreibt `text` verschlüsselt nach `<path>.enc` und entfernt eine alte Klartext-Datei `<path>`.
+pub fn write_protected(path: &Path, key: &Key, text: &str) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("Verzeichnis nicht anlegbar: {}", dir.display()))?;
+    }
+    write(&encrypted_path(path), key, text.as_bytes())?;
+    remove_if_exists(path)
+}
+
+/// Entfernt `<path>` und `<path>.enc`.
+pub fn remove_protected(path: &Path) -> Result<()> {
+    remove_if_exists(path)?;
+    remove_if_exists(&encrypted_path(path))
+}
+
+fn remove_if_exists(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("Datei nicht löschbar: {}", path.display())),
+    }
+}
+
+/// Wandelt eine alte Klartext-Datei `<path>` in `<path>.enc` um. `true`, wenn umgewandelt wurde.
+pub fn migrate_protected(path: &Path, key: &Key) -> Result<bool> {
+    if encrypted_path(path).exists() || !path.exists() {
+        return Ok(false);
+    }
+    let text = std::fs::read_to_string(path).with_context(|| format!("Datei nicht lesbar: {}", path.display()))?;
+    write_protected(path, key, &text)?;
+    Ok(true)
 }
 
 /// Ob `data` mit der Kennung verschlüsselter Dateien beginnt (Version egal).
