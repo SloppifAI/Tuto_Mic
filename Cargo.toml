@@ -10,6 +10,7 @@ publish = false
 anyhow = "1.0.104"
 base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 clap = { version = "4.6.7", features = ["derive"] }
 cpal = "0.18.2"
 directories = "6.0.0"
@@ -31,6 +32,7 @@ symphonia = { version = "0.6.1", features = ["all"] }
 ureq = { version = "3.5.0", features = ["json"] }
 url = "2.5.8"
 webbrowser = "1.2.5"
+zeroize = "1.9.1"
 
 # GPU-Backend für whisper.cpp ohne Feature-Flag, je nach Plattform. Ohne passende GPU rechnet whisper.cpp auf
 # der CPU. Vulkan läuft mit den normalen Treibern von NVIDIA, AMD und Intel; Metal auf Apple Silicon.

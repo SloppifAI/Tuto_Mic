@@ -39,6 +39,9 @@ dasselbe plus `deny` und `machete`.
   nie einem LLM überlassen: Lokale Modelle haben im Test Namen trotz Verbot im Prompt ausgegeben.
 - Nur pseudonymisierte Daten verlassen die Pipeline (`export.json`, Zusammenfassung). Neue Ausgaben brauchen
   einen Test, der das prüft (Beispiel: `pipeline::tests`).
+- Sitzungsdaten (Audio, Transkripte, Zusammenfassung, Log, Export) aus der GUI nur über `crypt` auf die Platte
+  schreiben, mit dem Schlüssel der Sitzung (`pipeline::Options::encryption`). Der Schlüssel wird nie gespeichert.
+  Klartext nur im CLI-Werkzeug `tuto-mic process` (Schlüssel `None`).
 
 ## Code
 

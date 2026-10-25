@@ -1,5 +1,7 @@
 //! Audio laden und auf 16 kHz mono bringen (das Format, das Whisper erwartet).
 
+use crate::crypt::{self, Key};
+use crate::recorder::SEGMENT_SUFFIX;
 use anyhow::{Context, Result};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
@@ -76,18 +78,24 @@ impl StreamResampler {
     }
 }
 
-/// Liest die Aufnahme-Segmente einer Session (16 kHz mono WAV) in Dateinamen-Reihenfolge.
-pub fn load_segments(audio_dir: &Path) -> Result<Vec<f32>> {
+/// Liest die verschlüsselten Aufnahme-Segmente einer Session (16 kHz mono WAV, siehe `recorder`) in
+/// Dateinamen-Reihenfolge und entschlüsselt sie mit dem Schlüssel der Sitzung.
+pub fn load_segments(audio_dir: &Path, key: &Key) -> Result<Vec<f32>> {
     let mut files: Vec<_> = std::fs::read_dir(audio_dir)
         .with_context(|| format!("Audio-Verzeichnis fehlt: {}", audio_dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|e| e == "wav"))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(SEGMENT_SUFFIX))
+        })
         .collect();
     files.sort();
     let mut samples = Vec::new();
     for f in files {
-        let mut reader =
-            hound::WavReader::open(&f).with_context(|| format!("Aufnahme-Segment nicht lesbar: {}", f.display()))?;
+        let wav = crypt::read(&f, key).context("Aufnahme-Segment nicht lesbar")?;
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(wav))
+            .with_context(|| format!("Aufnahme-Segment beschädigt: {}", f.display()))?;
         samples.extend(
             reader
                 .samples::<i16>()
@@ -177,25 +185,36 @@ mod tests {
         assert!((out.len() as i64 - expected).abs() < 1100, "len {}", out.len());
     }
 
+    fn write_encrypted_wav(path: &Path, value: i16, key: &Key) {
+        let mut wav = std::io::Cursor::new(Vec::new());
+        let mut w = hound::WavWriter::new(&mut wav, crate::recorder::SEGMENT_SPEC).unwrap();
+        for _ in 0..100 {
+            w.write_sample(value).unwrap();
+        }
+        w.finalize().unwrap();
+        crypt::write(path, key, wav.get_ref()).unwrap();
+    }
+
     #[test]
     fn loads_segments_in_order() {
         let dir = tempfile::tempdir().unwrap();
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: WHISPER_RATE,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
+        let key = Key::generate().unwrap();
         // Absichtlich in umgekehrter Reihenfolge anlegen.
-        for (name, value) in [("seg_00002.wav", 2000i16), ("seg_00001.wav", 1000)] {
-            let mut w = hound::WavWriter::create(dir.path().join(name), spec).unwrap();
-            for _ in 0..100 {
-                w.write_sample(value).unwrap();
-            }
-            w.finalize().unwrap();
+        for (name, value) in [("seg_00002.wav.enc", 2000i16), ("seg_00001.wav.enc", 1000)] {
+            write_encrypted_wav(&dir.path().join(name), value, &key);
         }
-        let samples = load_segments(dir.path()).unwrap();
+        // Andere Dateien (z. B. unverschlüsselte WAVs) werden nicht gelesen.
+        std::fs::write(dir.path().join("seg_00000.wav"), b"RIFF").unwrap();
+        let samples = load_segments(dir.path(), &key).unwrap();
         assert_eq!(samples.len(), 200);
         assert!(samples[0] < samples[199], "Segment 1 muss vor Segment 2 stehen");
+    }
+
+    #[test]
+    fn segments_need_the_session_key() {
+        let dir = tempfile::tempdir().unwrap();
+        write_encrypted_wav(&dir.path().join("seg_00001.wav.enc"), 1000, &Key::generate().unwrap());
+        let err = load_segments(dir.path(), &Key::generate().unwrap()).unwrap_err();
+        assert!(format!("{err:#}").contains("nicht entschlüsselbar"), "{err:#}");
     }
 }

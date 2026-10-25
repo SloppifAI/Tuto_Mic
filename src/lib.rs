@@ -8,6 +8,7 @@ pub mod app;
 pub mod audio;
 pub mod config;
 pub mod control;
+pub mod crypt;
 pub mod deeplink;
 pub mod gpu;
 pub mod icons;

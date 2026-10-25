@@ -163,6 +163,7 @@ Noch offen: Signierung (macOS-Notarisierung, Windows-Code-Signing), Installer.
 | `src/tuto/`, `src/tuto_panel.rs` | Tuto-Anbindung: Anmeldung (PKCE), Schnittstelle, Token-Ablage, CLI bzw. GUI |
 | `src/deeplink.rs` | `tutoapp://`-Links registrieren und an die laufende App weitergeben |
 | `src/pipeline.rs` | Ablauf nach der Aufnahme, Export |
+| `src/crypt.rs` | Verschlüsselung der Sitzungsdaten (XChaCha20-Poly1305, Schlüssel nur im Speicher), Dateiformat |
 | `src/prompts.rs`, `prompts/` | eingebauter + überschreibbarer Prompt |
 | `src/icons.rs` | selbst gezeichnete Icons (egui-Schriften enthalten keine Symbol-Glyphen) |
 
@@ -174,4 +175,11 @@ Pseudonymisierte Daten sind nach DSGVO weiterhin personenbezogen. Für einen ech
 braucht es u. a. Einwilligungen bzw. eine Rechtsgrundlage für die Aufnahme, eine Datenschutz-Folgenabschätzung
 und – bei Cloud-Diensten – einen Auftragsverarbeitungsvertrag. Die App setzt technisch auf: lokale
 Verarbeitung, sofortiges Löschen des Audios, keine Stimmprofile, Pseudonymisierung vor jedem KI-Schritt.
+
+Auf der Festplatte liegt nichts Personenbezogenes im Klartext: Jede Aufnahme bzw. Auswertung in der GUI bekommt
+einen zufälligen Schlüssel, der nur im Arbeitsspeicher existiert. Damit verschlüsselt sind die Audio-Segmente
+(das laufende 10-s-Segment bleibt bis zum Abschluss im Speicher) und alle Dateien der Sitzung (`*.enc`, Format in
+`src/crypt.rs`). Nach dem Senden an Tuto wird die Sitzung gelöscht; wird die App beendet oder stürzt sie ab, ist der
+Schlüssel weg, und der nächste Start löscht die unlesbaren Sitzungen. Nur `tuto-mic process` (Werkzeug für
+Entwickler:innen) schreibt seine Ergebnisse bewusst im Klartext.
 

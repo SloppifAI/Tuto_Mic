@@ -111,6 +111,8 @@ fn process(file: PathBuf, no_llm: bool) -> anyhow::Result<()> {
         summary_prompt: prompts::load(),
         skip_llm: no_llm,
         keep_original_transcript: true,
+        // Entwicklerwerkzeug: Ergebnisse im Klartext, damit sie sich ansehen lassen. Die GUI verschlüsselt immer.
+        encryption: None,
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let printer = std::thread::spawn(move || {
