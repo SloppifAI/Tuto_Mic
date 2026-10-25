@@ -17,9 +17,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Audiodatei ohne GUI verarbeiten (zum Testen von Modellen und Prompts).
+    /// Audiodatei oder Text-Transkript ohne GUI verarbeiten (zum Testen von Modellen und Prompts).
     Process {
-        audio: PathBuf,
+        /// `.txt`/`.md`: fertiges Transkript (UTF-8), ohne Whisper direkt pseudonymisieren und zusammenfassen.
+        /// Sonst: Audiodatei (mp3, wav, flac, ogg, m4a, …), die zuerst transkribiert wird.
+        file: PathBuf,
         /// Nur transkribieren und pseudonymisieren.
         #[arg(long)]
         no_llm: bool,
@@ -51,7 +53,7 @@ fn main() -> anyhow::Result<()> {
             )
             .map_err(|e| anyhow::anyhow!("GUI-Fehler: {e}"))
         }
-        Some(Cmd::Process { audio, no_llm }) => {
+        Some(Cmd::Process { file, no_llm }) => {
             let opts = pipeline::Options {
                 cfg: config::Config::load()?,
                 summary_prompt: prompts::load(),
@@ -72,7 +74,7 @@ fn main() -> anyhow::Result<()> {
             });
             let notify: pipeline::Notify = Arc::new(|| {});
             let outcome = pipeline::run(
-                &pipeline::Source::File(audio),
+                &pipeline::Source::import(file),
                 &opts,
                 &tx,
                 &notify,

@@ -1,5 +1,6 @@
 //! Verarbeitung nach der Aufnahme: Audio → Transkript → Pseudonymisierung → Zusammenfassung
-//! → Export-Paket. Läuft in einem Hintergrund-Thread.
+//! → Export-Paket. Läuft in einem Hintergrund-Thread. Ein importiertes Text-Transkript überspringt die ersten
+//! beiden Schritte.
 
 use crate::anonymize::Pseudonymizer;
 use crate::config::Config;
@@ -16,11 +17,41 @@ use std::time::Instant;
 /// Höchstlänge einer Zusammenfassung, die Tuto annimmt (Zeichen).
 pub const TUTO_SUMMARY_LIMIT: usize = 5000;
 
+/// Dateiendungen, die als Audio importiert werden (Dateidialog im Dev-Modus).
+pub const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "flac", "ogg", "m4a", "opus"];
+/// Dateiendungen, die als fertiges Text-Transkript importiert werden.
+pub const TRANSCRIPT_EXTENSIONS: &[&str] = &["txt", "md"];
+/// Beides zusammen, für einen gemeinsamen Filter im Dateidialog.
+pub const IMPORT_EXTENSIONS: [&str; 8] = ["mp3", "wav", "flac", "ogg", "m4a", "opus", "txt", "md"];
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum Source {
     /// Aufnahme-Session mit Segmenten in `audio/`.
     Session(PathBuf),
     /// Importierte Audiodatei (Dev-Modus / CLI).
     File(PathBuf),
+    /// Importiertes Text-Transkript (UTF-8), z. B. Demo-Daten oder zum Prompt-Testen: kein Audio, kein Whisper.
+    Transcript(PathBuf),
+}
+
+impl Source {
+    /// Importierte Datei nach Endung: Transkript bei `.txt`/`.md`, sonst Audio (symphonia erkennt viele Formate,
+    /// eine abschließende Liste wäre zu streng).
+    pub fn import(path: PathBuf) -> Self {
+        let is_transcript = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| TRANSCRIPT_EXTENSIONS.iter().any(|t| e.eq_ignore_ascii_case(t)));
+        if is_transcript {
+            Self::Transcript(path)
+        } else {
+            Self::File(path)
+        }
+    }
+
+    pub fn needs_whisper(&self) -> bool {
+        !matches!(self, Self::Transcript(_))
+    }
 }
 
 pub struct Options {
@@ -67,31 +98,107 @@ pub fn run(
     notify: &Notify,
     abort: Arc<AtomicBool>,
 ) -> Result<Outcome> {
+    run_in(&session::sessions_dir(), source, opts, tx, notify, abort)
+}
+
+/// Wie [`run`], legt Verzeichnisse für Importe aber unter `sessions` an (Tests: temporäres Verzeichnis).
+fn run_in(
+    sessions: &Path,
+    source: &Source,
+    opts: &Options,
+    tx: &Sender<Progress>,
+    notify: &Notify,
+    abort: Arc<AtomicBool>,
+) -> Result<Outcome> {
     let step = |s: String| {
         log::info!("{s}");
         let _ = tx.send(Progress::Step(s));
         notify();
     };
-    let cfg = &opts.cfg;
     let mut log = Vec::new();
 
-    step("Audio laden …".into());
-    let t = Instant::now();
-    let (dir, samples) = match source {
-        Source::Session(dir) => (dir.clone(), audio::load_segments(&session::audio_dir(dir))?),
+    let (dir, transcript, audio_secs) = match source {
+        Source::Transcript(path) => {
+            step("Transkript laden …".into());
+            let transcript = load_transcript(path)?;
+            log.push(format!(
+                "Transkript importiert: {} Wörter, {} Zeichen (kein Audio, keine Transkription)",
+                transcript.split_whitespace().count(),
+                transcript.chars().count()
+            ));
+            (session::create_in(sessions, import_label(path))?, transcript, None)
+        }
+        Source::Session(dir) => {
+            let samples = load_audio(&step, &mut log, || audio::load_segments(&session::audio_dir(dir)))?;
+            let (transcript, secs) = transcribe_samples(samples, &opts.cfg, tx, notify, abort, &step, &mut log)?;
+            if opts.cfg.delete_audio_after_transcription {
+                let audio_dir = session::audio_dir(dir);
+                std::fs::remove_dir_all(&audio_dir)
+                    .with_context(|| format!("Audio nicht löschbar: {}", audio_dir.display()))?;
+                log.push("Audio nach Transkription gelöscht".into());
+            }
+            (dir.clone(), transcript, Some(secs))
+        }
         Source::File(path) => {
-            let label = path.file_stem().and_then(|s| s.to_str());
-            let dir = session::create(label)?;
-            (dir, audio::load_file(path)?)
+            let samples = load_audio(&step, &mut log, || audio::load_file(path))?;
+            // Erst nach dem Laden anlegen: Eine unlesbare Datei hinterlässt so kein leeres Verzeichnis.
+            let dir = session::create_in(sessions, import_label(path))?;
+            let (transcript, secs) = transcribe_samples(samples, &opts.cfg, tx, notify, abort, &step, &mut log)?;
+            (dir, transcript, Some(secs))
         }
     };
-    let audio_secs = samples.len() as f64 / f64::from(audio::WHISPER_RATE);
+
+    let mut outcome = finish(&dir, transcript, audio_secs, opts, &step, log)?;
+    outcome.dir = dir;
+    Ok(outcome)
+}
+
+fn import_label(path: &Path) -> Option<&str> {
+    path.file_stem().and_then(|s| s.to_str())
+}
+
+/// Liest ein Text-Transkript. Leer ist ein Fehler, sonst bekäme das Modell nur den Prompt.
+fn load_transcript(path: &Path) -> Result<String> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("Transkript nicht lesbar (UTF-8-Text erwartet): {}", path.display()))?;
+    // Ein BOM (z. B. von Windows-Editoren) gehört nicht ins Transkript.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    anyhow::ensure!(!text.trim().is_empty(), "Transkript ist leer: {}", path.display());
+    Ok(text.to_string())
+}
+
+fn load_audio(
+    step: &dyn Fn(String),
+    log: &mut Vec<String>,
+    load: impl FnOnce() -> Result<Vec<f32>>,
+) -> Result<Vec<f32>> {
+    step("Audio laden …".into());
+    let t = Instant::now();
+    let samples = load()?;
     log.push(format!(
-        "Audio: {audio_secs:.0} s, geladen in {:.1} s",
+        "Audio: {:.0} s, geladen in {:.1} s",
+        audio_secs(&samples),
         t.elapsed().as_secs_f64()
     ));
+    Ok(samples)
+}
 
-    step(format!("Transkribieren ({:.0} min Audio) …", audio_secs / 60.0));
+fn audio_secs(samples: &[f32]) -> f64 {
+    samples.len() as f64 / f64::from(audio::WHISPER_RATE)
+}
+
+/// Whisper über das geladene Audio. Liefert das Transkript als Text und die Audiolänge in Sekunden.
+fn transcribe_samples(
+    samples: Vec<f32>,
+    cfg: &Config,
+    tx: &Sender<Progress>,
+    notify: &Notify,
+    abort: Arc<AtomicBool>,
+    step: &dyn Fn(String),
+    log: &mut Vec<String>,
+) -> Result<(String, f64)> {
+    let secs = audio_secs(&samples);
+    step(format!("Transkribieren ({:.0} min Audio) …", secs / 60.0));
     let t = Instant::now();
     let progress_tx = tx.clone();
     let progress_notify = notify.clone();
@@ -110,25 +217,15 @@ pub fn run(
         segments.len(),
         t.elapsed().as_secs_f64()
     ));
-
-    if matches!(source, Source::Session(_)) && cfg.delete_audio_after_transcription {
-        let audio_dir = session::audio_dir(&dir);
-        std::fs::remove_dir_all(&audio_dir)
-            .with_context(|| format!("Audio nicht löschbar: {}", audio_dir.display()))?;
-        log.push("Audio nach Transkription gelöscht".into());
-    }
-
-    let mut outcome = finish(&dir, transcribe::to_text(&segments), audio_secs, opts, &step, log)?;
-    outcome.dir = dir;
-    Ok(outcome)
+    Ok((transcribe::to_text(&segments), secs))
 }
 
 /// Alles nach der Transkription: Pseudonymisieren, Zusammenfassen, Dateien schreiben. Braucht kein Whisper
-/// und ist daher ohne Modelle testbar.
+/// und ist daher ohne Modelle testbar. `audio_secs` ist `None` bei importierten Text-Transkripten.
 fn finish(
     dir: &Path,
     transcript: String,
-    audio_secs: f64,
+    audio_secs: Option<f64>,
     opts: &Options,
     step: &dyn Fn(String),
     mut log: Vec<String>,
@@ -196,18 +293,22 @@ fn finish(
 
 /// Export-Paket für die spätere Aufgabenerstellung (z. B. Cloud-Modell): nur pseudonymisierte Daten, kein
 /// Audio, kein Original-Transkript, keine Namenszuordnung.
-fn export_json(opts: &Options, outcome: &Outcome, audio_secs: f64) -> serde_json::Value {
+///
+/// Format `lesson@1` bleibt bei importierten Text-Transkripten unverändert, weil alle Felder erhalten bleiben:
+/// `audio_seconds` und `models.transcription` sind dann `null` (kein Audio, kein Whisper). Bisherige Exporte aus
+/// Aufnahmen und Audiodateien sehen genauso aus wie vorher; `models.summary` konnte schon immer `null` sein.
+fn export_json(opts: &Options, outcome: &Outcome, audio_secs: Option<f64>) -> serde_json::Value {
     let cfg = &opts.cfg;
     json!({
         "format": "tuto-mic/lesson@1",
         "created": chrono::Local::now().to_rfc3339(),
         "app_version": env!("CARGO_PKG_VERSION"),
         "language": cfg.language,
-        "audio_seconds": audio_secs.round(),
+        "audio_seconds": audio_secs.map(f64::round),
         "transcript": outcome.transcript_anon,
         "summary": outcome.summary,
         "models": {
-            "transcription": cfg.whisper_model.file_name().map(|f| f.to_string_lossy()),
+            "transcription": audio_secs.and(cfg.whisper_model.file_name()).map(|f| f.to_string_lossy()),
             "summary": if opts.skip_llm { None } else { Some(&cfg.ollama_model) },
         },
     })
@@ -236,7 +337,7 @@ mod tests {
     }
 
     fn run_finish(dir: &Path, opts: &Options) -> Outcome {
-        finish(dir, TRANSCRIPT.into(), 61.4, opts, &|_| {}, Vec::new()).unwrap()
+        finish(dir, TRANSCRIPT.into(), Some(61.4), opts, &|_| {}, Vec::new()).unwrap()
     }
 
     fn read(dir: &Path, name: &str) -> String {
@@ -303,5 +404,109 @@ mod tests {
         let log = run_finish(dir.path(), &opts).log.join("\n");
         assert!(log.contains("Klassenliste ist leer"), "{log}");
         assert!(log.contains(&format!("höchstens {TUTO_SUMMARY_LIMIT}")), "{log}");
+    }
+
+    fn run_source(sessions: &Path, source: &Source, opts: &Options) -> Result<Outcome> {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let notify: Notify = Arc::new(|| {});
+        run_in(sessions, source, opts, &tx, &notify, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Einträge direkt unter `dir`, sortiert.
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn transcript_source_runs_without_audio_and_whisper() {
+        let input = tempfile::tempdir().unwrap();
+        let path = input.path().join("mathe stunde.txt");
+        // Format der Demo-Transkripte: Absätze statt Zeitstempel, hier mit BOM.
+        let text = "\u{feff}So, Ruhe bitte. Lena Wagner, an die Tafel.\n\nZwölf von 48 sind 25 %.\n";
+        std::fs::write(&path, text).unwrap();
+        let (url, server) = serve_once(200, r##"{"response":"# Prozente\nLena rechnete vor."}"##);
+        let sessions = tempfile::tempdir().unwrap();
+
+        let opts = options(&url);
+        let outcome = run_source(sessions.path(), &Source::Transcript(path), &opts).unwrap();
+
+        let request: serde_json::Value = serde_json::from_str(&server.join().unwrap().body).unwrap();
+        assert_eq!(
+            request["prompt"].as_str().unwrap(),
+            "Fasse zusammen:\nSo, Ruhe bitte. [Schüler A], an die Tafel.\n\nZwölf von 48 sind 25 %.\n"
+        );
+        assert_eq!(
+            outcome.summary.as_deref(),
+            Some("# Prozente\n[Schüler A] rechnete vor.")
+        );
+        assert!(outcome.dir.starts_with(sessions.path()));
+        assert!(outcome.dir.to_string_lossy().ends_with("_mathe_stunde"));
+        assert_eq!(
+            entries(&outcome.dir),
+            ["export.json", "log.txt", "summary.md", "transcript.anon.txt"]
+        );
+
+        let export: serde_json::Value = serde_json::from_str(&read(&outcome.dir, "export.json")).unwrap();
+        assert_eq!(export["format"], "tuto-mic/lesson@1");
+        assert!(export["audio_seconds"].is_null());
+        assert!(export["models"]["transcription"].is_null());
+        assert_eq!(export["models"]["summary"], opts.cfg.ollama_model.as_str());
+        for name in ["transcript.anon.txt", "summary.md", "export.json", "log.txt"] {
+            let content = read(&outcome.dir, name);
+            assert!(
+                !content.contains("Lena") && !content.contains("Wagner"),
+                "{name}: {content}"
+            );
+        }
+        assert!(read(&outcome.dir, "log.txt").contains("Transkript importiert: 14 Wörter"));
+    }
+
+    #[test]
+    fn audio_export_keeps_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = Options {
+            skip_llm: true,
+            ..options(NO_OLLAMA)
+        };
+        run_finish(dir.path(), &opts);
+        let export: serde_json::Value = serde_json::from_str(&read(dir.path(), "export.json")).unwrap();
+        assert_eq!(export["audio_seconds"], 61.0);
+        assert!(export["models"]["transcription"].is_string());
+    }
+
+    #[test]
+    fn failed_imports_leave_no_session_dir() {
+        let input = tempfile::tempdir().unwrap();
+        let empty = input.path().join("leer.txt");
+        std::fs::write(&empty, " \n\n").unwrap();
+        let sessions = tempfile::tempdir().unwrap();
+        let opts = options(NO_OLLAMA);
+
+        let err = run_source(sessions.path(), &Source::Transcript(empty), &opts).unwrap_err();
+        assert!(format!("{err:#}").contains("Transkript ist leer"), "{err:#}");
+        let missing = input.path().join("fehlt.mp3");
+        assert!(run_source(sessions.path(), &Source::File(missing), &opts).is_err());
+        assert_eq!(entries(sessions.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn import_routes_by_extension() {
+        let import = |p: &str| Source::import(PathBuf::from(p));
+        assert_eq!(import("a/stunde.txt"), Source::Transcript("a/stunde.txt".into()));
+        assert_eq!(import("stunde.MD"), Source::Transcript("stunde.MD".into()));
+        assert_eq!(import("stunde.mp3"), Source::File("stunde.mp3".into()));
+        assert_eq!(import("stunde.webm"), Source::File("stunde.webm".into()));
+        assert_eq!(import("stunde"), Source::File("stunde".into()));
+        assert!(!import("stunde.txt").needs_whisper());
+        assert!(import("stunde.wav").needs_whisper());
+        assert_eq!(
+            IMPORT_EXTENSIONS.to_vec(),
+            [AUDIO_EXTENSIONS, TRANSCRIPT_EXTENSIONS].concat()
+        );
     }
 }

@@ -130,7 +130,7 @@ impl TutoMicApp {
     }
 
     fn start_recording(&mut self) -> anyhow::Result<()> {
-        let dir = session::create(None)?;
+        let dir = session::create_recording()?;
         let rec = match Recorder::start(&session::audio_dir(&dir), self.cfg.segment_secs) {
             Ok(rec) => rec,
             Err(e) => {
@@ -381,14 +381,20 @@ impl TutoMicApp {
             ui.add_space(16.0);
             ui.separator();
             ui.label(RichText::new("Dev-Modus").strong());
-            if ui
-                .add_enabled(!self.models_missing(), egui::Button::new("Audiodatei verarbeiten …"))
-                .clicked()
+            // Transkripte brauchen kein Whisper-Modell, daher ist der Button auch ohne Modelle aktiv.
+            if ui.button("Audio- oder Textdatei verarbeiten …").clicked()
                 && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Audio", &["mp3", "wav", "flac", "ogg", "m4a", "opus"])
+                    .add_filter("Audio oder Transkript", &pipeline::IMPORT_EXTENSIONS)
+                    .add_filter("Audio", pipeline::AUDIO_EXTENSIONS)
+                    .add_filter("Transkript", pipeline::TRANSCRIPT_EXTENSIONS)
                     .pick_file()
             {
-                self.start_processing(Source::File(path), &ctx);
+                let source = Source::import(path);
+                if source.needs_whisper() && self.models_missing() {
+                    self.error = Some("Für Audiodateien fehlen die Modelle, bitte zuerst herunterladen".into());
+                } else {
+                    self.start_processing(source, &ctx);
+                }
             }
         }
     }
