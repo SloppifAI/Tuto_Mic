@@ -4,6 +4,7 @@ use crate::icons::{self, Icon};
 use crate::pipeline::{self, Outcome, Progress, Source};
 use crate::prompts;
 use crate::recorder::Recorder;
+use crate::tuto_panel::TutoPanel;
 use crate::{llm, models, session};
 use eframe::egui::{self, Color32, RichText};
 use std::path::PathBuf;
@@ -60,6 +61,7 @@ pub struct TutoMicApp {
     prompt_buf: String,
     /// Zuletzt angezeigter Aufnahmefehler, damit „Schließen“ ihn nicht im nächsten Frame wieder öffnet.
     rec_error_seen: Option<String>,
+    tuto: TutoPanel,
 }
 
 impl TutoMicApp {
@@ -88,6 +90,7 @@ impl TutoMicApp {
             ollama_models,
             prompt_buf: prompts::load(),
             rec_error_seen: None,
+            tuto: TutoPanel::new(),
         }
     }
 
@@ -400,7 +403,7 @@ impl TutoMicApp {
     }
 
     fn ui_result(&mut self, ui: &mut egui::Ui) {
-        let Some(outcome) = &self.outcome else {
+        let Some(outcome) = &mut self.outcome else {
             ui.label("Noch keine Auswertung. Nach einer Aufnahme erscheint das Ergebnis hier.");
             return;
         };
@@ -423,11 +426,28 @@ impl TutoMicApp {
             }
         });
         ui.separator();
+        if self.result_view == ResultView::Summary {
+            self.tuto.ui(ui, &self.cfg, outcome.summary.as_deref());
+            ui.add_space(6.0);
+            match &mut outcome.summary {
+                // Bearbeitbar, z. B. zum Kürzen vor dem Senden.
+                Some(summary) => {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(summary)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(30),
+                        );
+                    });
+                }
+                None => {
+                    ui.label("Keine Zusammenfassung – siehe Log.");
+                }
+            }
+            return;
+        }
         let mut text = match self.result_view {
-            ResultView::Summary => outcome
-                .summary
-                .clone()
-                .unwrap_or_else(|| "(keine Zusammenfassung – siehe Log)".into()),
+            ResultView::Summary => unreachable!("oben behandelt"),
             ResultView::TranscriptAnon => outcome.transcript_anon.clone(),
             ResultView::Transcript => outcome.transcript.clone(),
             ResultView::Log => outcome.log.join("\n"),

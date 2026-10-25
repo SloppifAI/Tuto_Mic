@@ -39,6 +39,25 @@ tuto-mic paths           # Pfade von Konfiguration, Prompts, Sessions, Modellen
 alles andere als Audiodatei. Für Transkripte braucht es kein Whisper-Modell; in `export.json` sind dann
 `audio_seconds` und `models.transcription` `null`.
 
+### An Tuto senden
+
+Im Tab **Ergebnis** verbindet „Mit Tuto verbinden“ die App mit dem Tuto-Konto der Lehrkraft (Anmeldung im
+Browser, OAuth mit PKCE – die App sieht kein Passwort). Danach lässt sich eine Stunde von heute wählen oder
+anlegen und die Zusammenfassung senden (höchstens 5000 Zeichen; der Text ist vorher bearbeitbar). Der Zugang
+liegt im Schlüsselbund des Betriebssystems.
+
+Nach „Erlauben“ springt der Browser über `tutoapp://callback` zurück in die App (unter Linux und Windows
+registriert sie sich dafür selbst). Klappt das nicht, die Adresse aus der Adresszeile in die App einfügen.
+
+```sh
+tuto-mic tuto login                       # dasselbe ohne GUI
+tuto-mic tuto lessons [--date 2026-10-23]
+tuto-mic tuto send <session-ordner> --lesson <id>
+tuto-mic tuto status | logout
+```
+
+Die Tuto-Adresse steht in der Konfiguration (`tuto_url`).
+
 Voraussetzung für die Zusammenfassung: [Ollama](https://ollama.com) läuft lokal und hat ein Modell,
 z. B. `ollama pull qwen3.5:9b`. Ohne Ollama werden Transkript und pseudonymisiertes Transkript trotzdem erstellt.
 
@@ -109,6 +128,8 @@ Installer.
 | `src/transcribe.rs` | whisper.cpp über whisper-rs |
 | `src/anonymize.rs` | Pseudonymisierung |
 | `src/llm.rs` | Ollama-HTTP-API |
+| `src/tuto/`, `src/tuto_panel.rs` | Tuto-Anbindung: Anmeldung (PKCE), Schnittstelle, Token-Ablage, CLI bzw. GUI |
+| `src/deeplink.rs` | `tutoapp://`-Links registrieren und an die laufende App weitergeben |
 | `src/pipeline.rs` | Ablauf nach der Aufnahme, Export |
 | `src/prompts.rs`, `prompts/` | eingebauter + überschreibbarer Prompt |
 | `src/icons.rs` | selbst gezeichnete Icons (egui-Schriften enthalten keine Symbol-Glyphen) |

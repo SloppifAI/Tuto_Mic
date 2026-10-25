@@ -18,6 +18,7 @@ pub mod recorder;
 pub mod session;
 pub mod transcribe;
 pub mod tuto;
+pub mod tuto_panel;
 
 #[cfg(test)]
 mod test_http;
