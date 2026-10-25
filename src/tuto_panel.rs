@@ -1,19 +1,18 @@
-//! GUI-Teil der Tuto-Anbindung: verbinden, Stunde wählen oder anlegen, Zusammenfassung senden.
+//! GUI-Teil der Tuto-Anbindung: Kontostatus in der Kopfzeile ([`TutoPanel::ui_account`]) und das Senden der
+//! Zusammenfassung an eine Stunde ([`TutoPanel::ui_send`]).
 //!
 //! Netzwerkaufrufe laufen in Hintergrund-Threads; die Ergebnisse kommen als [`Event`] zurück, damit die
 //! Oberfläche nie blockiert.
 
 use crate::config::Config;
 use crate::deeplink;
+use crate::theme::{self, BLUE_50, EMERALD_600, ROSE_600};
 use crate::tuto::auth::{Callback, PendingLogin};
-use crate::tuto::{self, ApiError, Client, Lesson, NewLesson, SUMMARY_LIMIT, SchoolClass, Session, store};
+use crate::tuto::{self, ApiError, Client, Lesson, NewLesson, SchoolClass, Session, store};
 use chrono::Local;
 use eframe::egui::{self, Color32, RichText};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
-
-const OK_GREEN: Color32 = Color32::from_rgb(60, 170, 90);
-const ERROR_RED: Color32 = Color32::from_rgb(220, 60, 60);
 
 enum Event {
     Connected(Session),
@@ -40,7 +39,7 @@ pub struct TutoPanel {
     session: Option<Session>,
     login: Option<PendingLogin>,
     paste: String,
-    links: Receiver<String>,
+    links: Option<Receiver<String>>,
     events: (Sender<Event>, Receiver<Event>),
     busy: Option<String>,
     lessons: Vec<Lesson>,
@@ -50,17 +49,13 @@ pub struct TutoPanel {
     form: NewLessonForm,
     confirm_overwrite: bool,
     message: Option<(bool, String)>,
-    /// Warum Rücksprünge über tutoapp:// nicht ankommen können (z. B. Port durch eine zweite App belegt).
+    /// Warum Rücksprünge über `tutoapp://` nicht ankommen können (z. B. Port durch eine zweite App belegt).
     listen_error: Option<String>,
 }
 
 impl TutoPanel {
-    #[expect(
-        clippy::new_without_default,
-        reason = "startet einen Listener und liest den Schlüsselbund"
-    )]
-    pub fn new() -> Self {
-        // Rücksprünge, die der Browser über tutoapp:// an eine zweite Instanz gibt, landen hier.
+    /// Startet den Empfang für `tutoapp://`-Rücksprünge und liest einen gespeicherten Zugang.
+    pub fn connect() -> Self {
         let (link_tx, links) = mpsc::channel();
         let listen_error = deeplink::listen(move |link| {
             log::info!("Rücksprung von Tuto empfangen");
@@ -77,9 +72,19 @@ impl TutoPanel {
         });
         Self {
             session,
+            links: Some(links),
+            listen_error,
+            ..Self::offline()
+        }
+    }
+
+    /// Ohne Listener und Schlüsselbund, z. B. für Tests und Bildschirmfotos.
+    pub fn offline() -> Self {
+        Self {
+            session: None,
             login: None,
             paste: String::new(),
-            links,
+            links: None,
             events: mpsc::channel(),
             busy: None,
             lessons: Vec::new(),
@@ -89,7 +94,7 @@ impl TutoPanel {
             form: NewLessonForm::default(),
             confirm_overwrite: false,
             message: None,
-            listen_error,
+            listen_error: None,
         }
     }
 
@@ -119,8 +124,19 @@ impl TutoPanel {
         });
     }
 
-    fn poll(&mut self, ctx: &egui::Context) {
-        while let Ok(link) = self.links.try_recv() {
+    /// Einmal pro Frame aufrufen: Rücksprünge und Ergebnisse der Hintergrundaufrufe verarbeiten.
+    pub fn update(&mut self, ctx: &egui::Context) {
+        let links: Vec<String> = self
+            .links
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for link in links {
+            // Die App nach vorne holen: Die Lehrkraft kommt gerade aus dem Browser zurück.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
             self.handle_link(&link, ctx);
         }
         while let Ok(event) = self.events.1.try_recv() {
@@ -151,7 +167,7 @@ impl TutoPanel {
                     self.message = Some((
                         true,
                         format!(
-                            "Zusammenfassung in Tuto gespeichert – {}, {}, {}",
+                            "In Tuto gespeichert – {}, {}, {}",
                             lesson.subject,
                             lesson.class.name,
                             lesson.held_on.format("%d.%m.%Y")
@@ -170,6 +186,12 @@ impl TutoPanel {
                 }
             }
         }
+        if self.login.as_ref().is_some_and(PendingLogin::is_expired) {
+            self.login = None;
+        }
+        if self.login.is_some() || self.busy.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(300));
+        }
     }
 
     fn start_login(&mut self, cfg: &Config) {
@@ -186,6 +208,7 @@ impl TutoPanel {
                 }
                 self.login = Some(login);
                 self.paste.clear();
+                self.message = None;
             }
             Err(e) => self.message = Some((false, format!("{e:#}"))),
         }
@@ -216,51 +239,91 @@ impl TutoPanel {
         }
     }
 
-    fn load(&mut self, ctx: &egui::Context) {
-        let today = Local::now().date_naive();
-        self.client_job(
-            "Lade Stunden …",
-            ctx,
-            move |c| Ok((c.lessons_on(today)?, c.classes()?)),
-            |(lessons, classes)| Event::Loaded { lessons, classes },
-        );
+    fn disconnect(&mut self) {
+        if let Some(session) = self.session.take() {
+            // Abmelden bei Tuto im Hintergrund; der lokale Zugang ist sofort weg.
+            std::thread::spawn(move || {
+                let _ = Client::new(session).logout();
+            });
+        }
+        self.lessons.clear();
+        self.loaded = false;
+        self.selected = None;
+        if let Err(e) = store::delete() {
+            self.message = Some((false, format!("{e:#}")));
+        }
     }
 
-    /// Zeigt den Bereich „An Tuto senden“ für die aktuelle Zusammenfassung.
-    pub fn ui(&mut self, ui: &mut egui::Ui, cfg: &Config, summary: Option<&str>) {
+    /// Kontostatus für die Kopfzeile: verbinden, Anmeldung läuft, oder verbunden (mit Menü zum Trennen).
+    pub fn ui_account(&mut self, ui: &mut egui::Ui, cfg: &Config) {
+        if let Some(session) = &self.session {
+            let name = session.user_name.clone();
+            let detail = format!(
+                "{}\nverbunden bis {}",
+                session.base_url.trim_start_matches("https://"),
+                session.expires_at.get(..10).unwrap_or(&session.expires_at)
+            );
+            let mut disconnect = false;
+            ui.menu_button(name, |ui| {
+                ui.label(RichText::new("Mit Tuto verbunden").font(theme::heading(14.0)));
+                ui.label(RichText::new(detail).small().color(theme::weak_text(ui)));
+                ui.separator();
+                if ui.button("Verbindung trennen").clicked() {
+                    disconnect = true;
+                    ui.close();
+                }
+            });
+            // Grüner Punkt als Zeichen für „verbunden“ (egui-Schriften haben kein ●). Die Kopfzeile ordnet von rechts
+            // nach links an, daher steht er nach dem Knopf im Code und davor auf dem Bildschirm.
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().circle_filled(dot.center(), 5.0, EMERALD_600);
+            if disconnect {
+                self.disconnect();
+            }
+        } else if self.login.is_some() || self.busy.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new("Anmeldung im Browser …").color(theme::weak_text(ui)));
+            });
+        } else if ui.button("Mit Tuto verbinden").clicked() {
+            self.start_login(cfg);
+        }
+    }
+
+    /// Bereich „An Tuto senden“ unter der Zusammenfassung.
+    pub fn ui_send(&mut self, ui: &mut egui::Ui, cfg: &Config, summary: Option<&str>) {
         let ctx = ui.ctx().clone();
-        self.poll(&ctx);
-        if self.login.is_some() || self.busy.is_some() {
-            ctx.request_repaint_after(Duration::from_millis(300));
+        ui.label(RichText::new("An Tuto senden").font(theme::heading(18.0)));
+        ui.add_space(2.0);
+
+        if let Some(label) = &self.busy {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(label);
+            });
+        } else if self.session.is_none() {
+            self.ui_login(ui, cfg, &ctx);
+        } else {
+            self.ui_lessons(ui, cfg, summary, &ctx);
         }
 
-        ui.group(|ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new("An Tuto senden").strong());
-
-            if let Some(label) = &self.busy {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(label);
-                });
-            } else if self.session.is_none() {
-                self.ui_login(ui, cfg, &ctx);
-            } else {
-                self.ui_connected(ui, summary, &ctx);
-            }
-
-            if let Some((ok, msg)) = &self.message {
-                ui.label(RichText::new(msg).color(if *ok { OK_GREEN } else { ERROR_RED }));
-            }
-        });
+        if let Some((ok, msg)) = &self.message {
+            ui.add_space(4.0);
+            ui.label(RichText::new(msg).color(if *ok { EMERALD_600 } else { ROSE_600 }));
+        }
     }
 
     fn ui_login(&mut self, ui: &mut egui::Ui, cfg: &Config, ctx: &egui::Context) {
-        if self.login.as_ref().is_some_and(PendingLogin::is_expired) {
-            self.login = None;
-        }
+        let weak = theme::weak_text(ui);
         if self.login.is_none() {
-            if ui.button("Mit Tuto verbinden").clicked() {
+            ui.label(
+                RichText::new(
+                    "Verbinde Tuto Mic einmalig mit deinem Tuto-Konto. Danach landet die Zusammenfassung mit einem \
+                     Klick bei der passenden Stunde.",
+                )
+                .color(weak),
+            );
+            if ui.add(theme::primary_button("Mit Tuto verbinden")).clicked() {
                 self.start_login(cfg);
             }
             return;
@@ -272,109 +335,74 @@ impl TutoPanel {
                     "Der automatische Rücksprung ist blockiert ({e}). Läuft Tuto Mic ein zweites Mal? Dann diese \
                      Instanz schließen und die andere verwenden."
                 ))
-                .color(ERROR_RED),
+                .color(ROSE_600),
             );
         }
-        ui.label(
-            RichText::new(
-                "Falls der Browser die Adresse tutoapp://callback?… anzeigt (z. B. in der Adresszeile oder einer \
-                 Fehlermeldung), kann sie auch hier eingefügt werden.",
-            )
-            .small()
-            .weak(),
-        );
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.paste)
-                    .hint_text("tutoapp://callback?code=…")
-                    .desired_width(360.0),
+        ui.collapsing(RichText::new("Kommt nichts zurück?").color(weak), |ui| {
+            ui.label(
+                RichText::new(
+                    "Zeigt der Browser eine Adresse, die mit tutoapp://callback beginnt, kann sie hier eingefügt werden.",
+                )
+                .small()
+                .color(weak),
             );
-            if ui
-                .add_enabled(!self.paste.trim().is_empty(), egui::Button::new("Übernehmen"))
-                .clicked()
-            {
-                let link = std::mem::take(&mut self.paste);
-                self.handle_link(&link, ctx);
-            }
-            if ui.button("Abbrechen").clicked() {
-                self.login = None;
-            }
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.paste)
+                        .hint_text("tutoapp://callback?code=…")
+                        .desired_width(300.0),
+                );
+                if ui.add_enabled(!self.paste.trim().is_empty(), egui::Button::new("Übernehmen")).clicked() {
+                    let link = std::mem::take(&mut self.paste);
+                    self.handle_link(&link, ctx);
+                }
+            });
         });
+        if ui.button("Abbrechen").clicked() {
+            self.login = None;
+        }
     }
 
-    fn ui_connected(&mut self, ui: &mut egui::Ui, summary: Option<&str>, ctx: &egui::Context) {
-        let Some(session) = &self.session else { return };
-        let user = format!("Verbunden als {}", session.user_name);
+    fn ui_lessons(&mut self, ui: &mut egui::Ui, cfg: &Config, summary: Option<&str>, ctx: &egui::Context) {
+        if !self.loaded {
+            let today = Local::now().date_naive();
+            self.client_job(
+                "Lade Stunden …",
+                ctx,
+                move |c| Ok((c.lessons_on(today)?, c.classes()?)),
+                |(lessons, classes)| Event::Loaded { lessons, classes },
+            );
+            return;
+        }
+        let weak = theme::weak_text(ui);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(user).small().weak());
-            if ui.small_button("Neu laden").clicked() {
+            ui.label(RichText::new(format!("Deine Stunden heute, {}", Local::now().format("%d.%m.%Y"))).color(weak));
+            if ui.small_button("Aktualisieren").clicked() {
                 self.loaded = false;
-            }
-            if ui.small_button("Trennen").clicked() {
-                let session = self.session.take();
-                self.lessons.clear();
-                self.loaded = false;
-                if let Some(session) = session {
-                    // Abmelden bei Tuto im Hintergrund; der lokale Zugang ist sofort weg.
-                    std::thread::spawn(move || {
-                        let _ = Client::new(session).logout();
-                    });
-                }
-                if let Err(e) = store::delete() {
-                    self.message = Some((false, format!("{e:#}")));
-                }
             }
         });
-        if self.session.is_none() {
-            return;
-        }
-        if !self.loaded {
-            self.load(ctx);
-            return;
-        }
-
-        ui.label(format!("Stunden heute ({}):", Local::now().format("%d.%m.%Y")));
-        if self.lessons.is_empty() {
-            ui.label(RichText::new("Keine Stunde für heute in Tuto.").weak());
+        if self.lessons.is_empty() && !self.form.open {
+            ui.label(RichText::new("Für heute ist in Tuto noch keine Stunde angelegt.").color(weak));
         }
         for lesson in &self.lessons {
-            let mut text = format!("{} · {}: {}", lesson.class.name, lesson.subject, lesson.topic);
-            if lesson.released {
-                text.push_str("  (Hausaufgabe freigegeben)");
-            } else if lesson.summary.is_some() {
-                text.push_str("  (hat schon eine Zusammenfassung)");
-            }
-            if ui.radio(self.selected == Some(lesson.id), text).clicked() {
+            let selected = self.selected == Some(lesson.id);
+            if lesson_row(ui, lesson, selected).clicked() {
                 self.selected = Some(lesson.id);
                 self.confirm_overwrite = false;
             }
         }
         self.ui_new_lesson(ui, ctx);
 
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         let Some(summary) = summary.map(str::trim).filter(|s| !s.is_empty()) else {
-            ui.label(RichText::new("Keine Zusammenfassung vorhanden.").weak());
+            ui.label(RichText::new("Keine Zusammenfassung vorhanden.").color(weak));
             return;
         };
-        let chars = summary.chars().count();
-        let too_long = chars > SUMMARY_LIMIT;
-        ui.label(
-            RichText::new(format!(
-                "{chars} / {SUMMARY_LIMIT} Zeichen{}",
-                if too_long { " – bitte kürzen" } else { "" }
-            ))
-            .small()
-            .color(if too_long {
-                ERROR_RED
-            } else {
-                ui.visuals().weak_text_color()
-            }),
-        );
+        let too_long = summary.chars().count() > cfg.summary_limit;
         let lesson = self
             .selected
             .and_then(|id| self.lessons.iter().find(|l| l.id == id))
             .cloned();
-        let can_send = lesson.is_some() && !too_long;
         if self.confirm_overwrite
             && let Some(lesson) = &lesson
         {
@@ -384,17 +412,24 @@ impl TutoPanel {
                 "Diese Stunde hat schon eine Zusammenfassung. Überschreiben?"
             });
             ui.horizontal(|ui| {
-                if ui.button("Überschreiben").clicked() {
+                if ui.add(theme::primary_button("Überschreiben")).clicked() {
                     self.send(lesson.id, summary, ctx);
                 }
                 if ui.button("Abbrechen").clicked() {
                     self.confirm_overwrite = false;
                 }
             });
-        } else if ui
-            .add_enabled(can_send, egui::Button::new("Zusammenfassung senden"))
+            return;
+        }
+        let label = match &lesson {
+            Some(_) if too_long => "Zu lang zum Senden",
+            Some(_) => "Zusammenfassung senden",
+            None => "Erst eine Stunde wählen",
+        };
+        if ui
+            .add_enabled(lesson.is_some() && !too_long, theme::primary_button(label))
             .clicked()
-            && let Some(lesson) = lesson
+            && let Some(lesson) = &lesson
         {
             if lesson.summary.is_some() || lesson.released {
                 self.confirm_overwrite = true;
@@ -406,57 +441,77 @@ impl TutoPanel {
 
     fn ui_new_lesson(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if !self.form.open {
-            if ui.small_button("Neue Stunde anlegen …").clicked() {
+            if ui.button("+ Neue Stunde anlegen").clicked() {
                 self.form.open = true;
                 self.form.class_id = self.classes.first().map(|c| c.id);
             }
             return;
         }
-        egui::Grid::new("new_lesson").num_columns(2).show(ui, |ui| {
-            ui.label("Klasse");
-            let current = self
-                .classes
-                .iter()
-                .find(|c| Some(c.id) == self.form.class_id)
-                .map_or("–", |c| c.name.as_str());
-            egui::ComboBox::from_id_salt("class")
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    for class in &self.classes {
-                        ui.selectable_value(&mut self.form.class_id, Some(class.id), &class.name);
+        egui::Frame::new()
+            .fill(if ui.visuals().dark_mode {
+                theme::SLATE_800
+            } else {
+                BLUE_50
+            })
+            .corner_radius(egui::CornerRadius::same(12))
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Neue Stunde für heute").font(theme::heading(14.0)));
+                egui::Grid::new("new_lesson")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        let class_label = ui.label("Klasse");
+                        let current = self
+                            .classes
+                            .iter()
+                            .find(|c| Some(c.id) == self.form.class_id)
+                            .map_or("–", |c| c.name.as_str());
+                        egui::ComboBox::from_id_salt("class")
+                            .selected_text(current)
+                            .show_ui(ui, |ui| {
+                                for class in &self.classes {
+                                    ui.selectable_value(&mut self.form.class_id, Some(class.id), &class.name);
+                                }
+                            })
+                            .response
+                            .labelled_by(class_label.id);
+                        ui.end_row();
+                        let l = ui.label("Fach");
+                        ui.add(egui::TextEdit::singleline(&mut self.form.subject).hint_text("z. B. Mathematik"))
+                            .labelled_by(l.id);
+                        ui.end_row();
+                        let l = ui.label("Thema");
+                        ui.add(egui::TextEdit::singleline(&mut self.form.topic).hint_text("z. B. Prozentrechnung"))
+                            .labelled_by(l.id);
+                        ui.end_row();
+                    });
+                let valid = self.form.class_id.is_some()
+                    && !self.form.subject.trim().is_empty()
+                    && !self.form.topic.trim().is_empty();
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(valid, theme::primary_button("Anlegen")).clicked()
+                        && let Some(class_id) = self.form.class_id
+                    {
+                        let lesson = NewLesson {
+                            class_id,
+                            subject: self.form.subject.trim().chars().take(255).collect(),
+                            topic: self.form.topic.trim().chars().take(255).collect(),
+                            held_on: Local::now().date_naive(),
+                        };
+                        self.client_job(
+                            "Lege Stunde an …",
+                            ctx,
+                            move |c| c.create_lesson(&lesson),
+                            Event::Created,
+                        );
+                    }
+                    if ui.button("Abbrechen").clicked() {
+                        self.form = NewLessonForm::default();
                     }
                 });
-            ui.end_row();
-            ui.label("Fach");
-            ui.text_edit_singleline(&mut self.form.subject);
-            ui.end_row();
-            ui.label("Thema");
-            ui.text_edit_singleline(&mut self.form.topic);
-            ui.end_row();
-        });
-        let valid =
-            self.form.class_id.is_some() && !self.form.subject.trim().is_empty() && !self.form.topic.trim().is_empty();
-        ui.horizontal(|ui| {
-            if ui.add_enabled(valid, egui::Button::new("Anlegen")).clicked()
-                && let Some(class_id) = self.form.class_id
-            {
-                let lesson = NewLesson {
-                    class_id,
-                    subject: self.form.subject.trim().chars().take(255).collect(),
-                    topic: self.form.topic.trim().chars().take(255).collect(),
-                    held_on: Local::now().date_naive(),
-                };
-                self.client_job(
-                    "Lege Stunde an …",
-                    ctx,
-                    move |c| c.create_lesson(&lesson),
-                    Event::Created,
-                );
-            }
-            if ui.button("Abbrechen").clicked() {
-                self.form = NewLessonForm::default();
-            }
-        });
+            });
     }
 
     fn send(&mut self, lesson_id: u64, summary: &str, ctx: &egui::Context) {
@@ -468,5 +523,64 @@ impl TutoPanel {
             move |c| c.set_summary(lesson_id, &summary),
             Event::Sent,
         );
+    }
+}
+
+/// Auswählbare Zeile für eine Stunde: Klasse, Fach, Thema und Hinweis auf eine vorhandene Zusammenfassung.
+fn lesson_row(ui: &mut egui::Ui, lesson: &Lesson, selected: bool) -> egui::Response {
+    let dark = ui.visuals().dark_mode;
+    let (fill, stroke) = match (selected, dark) {
+        (true, false) => (BLUE_50, theme::BLUE_600),
+        (true, true) => (theme::SLATE_800, theme::BLUE_400),
+        (false, false) => (Color32::WHITE, theme::SLATE_200),
+        (false, true) => (theme::SLATE_900, theme::SLATE_800),
+    };
+    let weak = theme::weak_text(ui);
+    let response = egui::Frame::new()
+        .fill(fill)
+        .stroke(egui::Stroke::new(if selected { 2.0 } else { 1.0 }, stroke))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::symmetric(14, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&lesson.class.name).font(theme::heading(15.0)));
+                ui.label(format!("{}: {}", lesson.subject, lesson.topic));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if lesson.released {
+                        ui.label(RichText::new("Hausaufgabe freigegeben").small().color(weak));
+                    } else if lesson.summary.is_some() {
+                        ui.label(RichText::new("hat Zusammenfassung").small().color(weak));
+                    }
+                });
+            });
+        })
+        .response;
+    response
+        .interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+#[cfg(test)]
+impl TutoPanel {
+    /// Zustand „verbunden, Stunden geladen“ für Bildschirmfotos.
+    pub fn demo_connected(lessons: Vec<Lesson>, selected: Option<u64>) -> Self {
+        Self {
+            session: Some(Session {
+                base_url: "https://tuto.example".into(),
+                token: "test".into(),
+                expires_at: "2027-04-23T10:15:00+00:00".into(),
+                user_name: "Frau Schulze".into(),
+                role: "teacher".into(),
+            }),
+            lessons,
+            classes: vec![SchoolClass {
+                id: 3,
+                name: "7b".into(),
+            }],
+            loaded: true,
+            selected,
+            ..Self::offline()
+        }
     }
 }

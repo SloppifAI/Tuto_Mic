@@ -13,6 +13,7 @@ cargo clippy --all-targets -- -D warnings    # Lints (Regeln in Cargo.toml)
 cargo fmt                                    # Formatierung (rustfmt.toml)
 cargo deny check                             # Sicherheitslücken, Lizenzen (deny.toml)
 cargo machete                                # ungenutzte Abhängigkeiten
+cargo test ui_preview -- --ignored           # alle GUI-Zustände als PNG nach target/ui-preview/ (braucht GPU)
 cargo run -- --dev                           # GUI mit Dev-Modus
 nix develop .#cuda -c cargo gpu --dev       # mit NVIDIA-GPU (Alias in .cargo/config.toml)
 ```
@@ -49,6 +50,8 @@ dasselbe plus `deny` und `machete`.
 - Lints in `Cargo.toml` nicht lockern. Einzelne Ausnahmen mit `#[expect(clippy::…, reason = "…")]`.
 - Logik gehört in die Bibliothek (`src/lib.rs`), nicht in `main.rs` oder die GUI, damit sie ohne Fenster
   testbar bleibt. `src/app.rs` ruft nur auf und zeigt an.
+- GUI-Änderungen mit `cargo test ui_preview -- --ignored` ansehen, bevor jemand die App startet. Jedes
+  Bedienelement braucht einen zugänglichen Namen (die Vorschau prüft das).
 - egui-Schriften enthalten keine Symbole (●, ▶, ⚠, →, …): Icons über `src/icons.rs` zeichnen, sonst Text.
 - Neue Abhängigkeiten nur nach Rückfrage; ihre Lizenz muss in `deny.toml` erlaubt sein.
 

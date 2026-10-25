@@ -16,6 +16,7 @@ pub mod pipeline;
 pub mod prompts;
 pub mod recorder;
 pub mod session;
+pub mod theme;
 pub mod transcribe;
 pub mod tuto;
 pub mod tuto_panel;

@@ -11,6 +11,9 @@ struct Cli {
     /// Dev-Modus: Prompt-Editor, Datei-Import, Original-Transkript (auch per `TUTO_MIC_DEV=1`).
     #[arg(long)]
     dev: bool,
+    /// Admin-Modus: Einstellungen ändern (auch per `TUTO_MIC_ADMIN=1`).
+    #[arg(long)]
+    admin: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -53,19 +56,23 @@ fn main() -> anyhow::Result<()> {
     }
     let cli = Cli::parse();
     let dev = cli.dev || std::env::var("TUTO_MIC_DEV").is_ok_and(|v| v == "1");
+    let admin = cli.admin || std::env::var("TUTO_MIC_ADMIN").is_ok_and(|v| v == "1");
 
     match cli.cmd {
         None => {
             let options = eframe::NativeOptions {
                 viewport: eframe::egui::ViewportBuilder::default()
                     .with_title("Tuto Mic")
-                    .with_inner_size([820.0, 620.0]),
+                    .with_inner_size([960.0, 820.0])
+                    .with_min_inner_size([560.0, 520.0])
+                    .with_icon(tuto_mic::theme::window_icon())
+                    .with_app_id("tuto-mic"),
                 ..Default::default()
             };
             eframe::run_native(
                 "Tuto Mic",
                 options,
-                Box::new(move |_cc| Ok(Box::new(app::TutoMicApp::new(dev)))),
+                Box::new(move |cc| Ok(Box::new(app::TutoMicApp::new(&cc.egui_ctx, app::Mode { admin, dev })))),
             )
             .map_err(|e| anyhow::anyhow!("GUI-Fehler: {e}"))
         }

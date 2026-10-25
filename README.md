@@ -28,6 +28,7 @@ Mikrofon ──► Segmente (10 s, 16 kHz) ──► Whisper (lokal) ──► P
 
 ```sh
 tuto-mic                 # GUI
+tuto-mic --admin         # GUI mit Einstellungen (Klassenliste, Modelle, Tuto-Adresse); auch TUTO_MIC_ADMIN=1
 tuto-mic --dev           # GUI mit Dev-Modus
 tuto-mic download        # Whisper- und VAD-Modell laden (~550 MB, alternativ per Button in der GUI)
 tuto-mic process stunde.mp3 [--no-llm]   # ohne GUI, z. B. zum Prompt-Testen

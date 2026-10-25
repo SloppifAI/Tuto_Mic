@@ -17,9 +17,6 @@ use std::fmt;
 use std::time::Duration;
 use ureq::http::Response;
 
-/// Höchstlänge einer Zusammenfassung, die Tuto annimmt (Zeichen).
-pub const SUMMARY_LIMIT: usize = 5000;
-
 /// Zugang nach erfolgreichem Verbinden. Das Token gilt 180 Tage.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
@@ -238,16 +235,8 @@ impl Client {
         Ok(self.json::<Data<Lesson>>(resp)?.data)
     }
 
-    /// Setzt die Zusammenfassung einer Stunde. Prüft die Länge vorher, damit die Lehrkraft eine klare
-    /// Meldung bekommt.
+    /// Setzt die Zusammenfassung einer Stunde. Die Länge prüft Tuto selbst (Meldung kommt als 422 zurück).
     pub fn set_summary(&self, lesson_id: u64, summary: &str) -> Result<Lesson> {
-        let chars = summary.chars().count();
-        if chars > SUMMARY_LIMIT {
-            return Err(ApiError::Invalid(format!(
-                "Die Zusammenfassung hat {chars} Zeichen, Tuto nimmt höchstens {SUMMARY_LIMIT} an. Bitte kürzen."
-            ))
-            .into());
-        }
         let resp = self
             .agent
             .put(self.url(&format!("/lessons/{lesson_id}/summary")))
@@ -374,14 +363,6 @@ mod tests {
         assert!(req.head.starts_with("PUT /api/v1/lessons/12/summary "), "{}", req.head);
         let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
         assert_eq!(body["summary"], "# Mathe\nInhalt");
-    }
-
-    #[test]
-    fn rejects_too_long_summary_before_sending() {
-        let err = client("http://127.0.0.1:9")
-            .set_summary(12, &"x".repeat(SUMMARY_LIMIT + 1))
-            .unwrap_err();
-        assert!(format!("{err}").contains("höchstens 5000"), "{err}");
     }
 
     #[test]

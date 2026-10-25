@@ -33,9 +33,6 @@ fn check_abort(abort: &AtomicBool) -> Result<()> {
     Ok(())
 }
 
-/// Höchstlänge einer Zusammenfassung, die Tuto annimmt (Zeichen).
-pub const TUTO_SUMMARY_LIMIT: usize = 5000;
-
 /// Dateiendungen, die als Audio importiert werden (Dateidialog im Dev-Modus).
 pub const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "flac", "ogg", "m4a", "opus"];
 /// Dateiendungen, die als fertiges Text-Transkript importiert werden.
@@ -314,9 +311,10 @@ fn finish(
                 // geänderten Prompt hineingeraten.
                 let summary = pseudonymizer.apply(&g.text);
                 let chars = summary.chars().count();
-                if chars > TUTO_SUMMARY_LIMIT {
+                if chars > cfg.summary_limit {
                     log.push(format!(
-                        "Warnung: Zusammenfassung hat {chars} Zeichen, Tuto nimmt höchstens {TUTO_SUMMARY_LIMIT} an"
+                        "Warnung: Zusammenfassung hat {chars} Zeichen, Tuto nimmt höchstens {} an",
+                        cfg.summary_limit
                     ));
                 }
                 write("summary.md", &summary)?;
@@ -466,14 +464,14 @@ mod tests {
 
     #[test]
     fn warns_about_empty_class_list_and_long_summary() {
-        let body = format!(r#"{{"response":"{}"}}"#, "x".repeat(TUTO_SUMMARY_LIMIT + 1));
+        let body = format!(r#"{{"response":"{}"}}"#, "x".repeat(5001));
         let (url, _server) = serve_once(200, body);
         let dir = tempfile::tempdir().unwrap();
         let mut opts = options(&url);
         opts.cfg.class_list.clear();
         let log = run_finish(dir.path(), &opts).log.join("\n");
         assert!(log.contains("Klassenliste ist leer"), "{log}");
-        assert!(log.contains(&format!("höchstens {TUTO_SUMMARY_LIMIT}")), "{log}");
+        assert!(log.contains("höchstens 5000"), "{log}");
     }
 
     #[test]
