@@ -258,6 +258,16 @@ fn ui_preview() {
         TutoMicApp::draw,
     );
     page(
+        "16-vorschau",
+        false,
+        |ctx| {
+            let mut a = app(ctx, TutoPanel::offline(), Some(outcome()), true);
+            a.editor.preview = true;
+            a
+        },
+        TutoMicApp::draw,
+    );
+    page(
         "14-passwort",
         false,
         |ctx| app(ctx, TutoPanel::offline(), None, true),

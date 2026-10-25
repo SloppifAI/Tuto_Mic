@@ -184,15 +184,7 @@ impl TutoMicApp {
             );
             ui.add_space(4.0);
             match &mut outcome.summary {
-                Some(summary) => {
-                    ui.add(
-                        egui::TextEdit::multiline(summary)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(12)
-                            .margin(egui::Margin::same(12)),
-                    )
-                    .labelled_by(title);
-                }
+                Some(summary) => self.editor.ui(ui, summary, title),
                 None => {
                     ui.label(
                         RichText::new("Es konnte keine Zusammenfassung erstellt werden. Läuft Ollama?").color(ROSE_600),

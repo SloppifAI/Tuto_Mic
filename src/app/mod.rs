@@ -3,6 +3,7 @@
 //! Admin-Modus (`--admin`); sonst gelten die zentralen Vorgaben (Datei oder Umgebungsvariablen, siehe `config`).
 
 mod admin;
+mod editor;
 mod lock;
 mod screens;
 
@@ -97,6 +98,7 @@ pub struct TutoMicApp {
     success: Option<String>,
     /// Offene Rückfrage auf der Startseite.
     confirm: Option<Confirm>,
+    editor: editor::SummaryEditor,
     close: Close,
     delete: DeleteLast,
     download: Option<Download>,
@@ -133,6 +135,7 @@ impl TutoMicApp {
             notice: None,
             success: None,
             confirm: None,
+            editor: editor::SummaryEditor::default(),
             close: Close::Normal,
             delete: DeleteLast {
                 open: false,
@@ -165,6 +168,7 @@ impl TutoMicApp {
             notice: None,
             success: None,
             confirm: None,
+            editor: editor::SummaryEditor::default(),
             close: Close::Normal,
             delete: DeleteLast {
                 open: false,
