@@ -42,6 +42,24 @@ pub fn listen(on_link: impl Fn(String) + Send + 'static) -> Result<()> {
     listen_on(SocketAddr::from((Ipv4Addr::LOCALHOST, PORT)), on_link).map(|_| ())
 }
 
+/// Hält fest, dass der Browser einen Rücksprung geliefert hat (ohne den Link selbst, er enthält den Code). Diese
+/// Instanz hat weder Terminal noch Fenster, die Datei ist der einzige Hinweis bei der Fehlersuche.
+pub fn log_attempt(forwarded: bool) {
+    let path = crate::config::dirs().data_dir().join("deeplink.log");
+    let line = format!(
+        "{} Rücksprung empfangen, {}\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        if forwarded {
+            "an die laufende App übergeben"
+        } else {
+            "keine laufende App gefunden"
+        }
+    );
+    let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path))
+        .and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(&path))
+        .and_then(|mut f| f.write_all(line.as_bytes()));
+}
+
 fn forward_to(addr: SocketAddr, link: &str) -> Result<bool> {
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1))?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;

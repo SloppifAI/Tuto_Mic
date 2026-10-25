@@ -42,7 +42,9 @@ fn main() -> anyhow::Result<()> {
     whisper_rs::install_logging_hooks();
     // Vom Browser gestartet mit dem Rücksprung von Tuto: an die laufende App weitergeben.
     if let Some(link) = std::env::args().nth(1).filter(|a| deeplink::is_link(a)) {
-        if !deeplink::forward(&link) {
+        let forwarded = deeplink::forward(&link);
+        deeplink::log_attempt(forwarded);
+        if !forwarded {
             // Kein Fehlercode: `xdg-open` würde den Link sonst an den Browser weiterreichen, der ihn wieder an
             // xdg-open gibt.
             eprintln!("Tuto Mic läuft nicht – bitte die App öffnen und noch einmal verbinden.");
