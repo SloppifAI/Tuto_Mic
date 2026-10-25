@@ -162,7 +162,7 @@ Nur in der Datei: `num_ctx` (Kontextlänge für Ollama, `32768`) und `segment_se
 ```sh
 tuto-mic info            # Version, Whisper-Backend (GPU oder CPU), Modelle, gültige Konfiguration, gesetzte Variablen
 tuto-mic paths           # Pfade von Konfiguration, Prompts, Sitzungen, Modellen
-tuto-mic download        # Modelle vorab laden (~550 MB), z. B. bei der Einrichtung
+tuto-mic download        # Modelle vorab laden (~1,6 GB), z. B. bei der Einrichtung
 tuto-mic --admin         # GUI mit Admin-Menü (auch TUTO_MIC_ADMIN=1)
 ```
 

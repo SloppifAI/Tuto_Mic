@@ -46,7 +46,7 @@ Beim ersten Zugriff auf das Mikrofon fragt das System nach der Erlaubnis – zus
 
 1. **Passwort festlegen.** Tuto Mic verschlüsselt damit Einstellungen und Klassenliste. Es wird bei jedem Start
    gebraucht und lässt sich **nicht wiederherstellen**. Es sollten nur die Betreuung bzw. die Lehrkräfte kennen.
-2. **Spracherkennung herunterladen.** Knopf auf der Startseite, ca. 550 MB. Danach funktioniert die
+2. **Spracherkennung herunterladen.** Knopf auf der Startseite, ca. 1,6 GB. Danach funktioniert die
    Transkription ohne Internet.
 3. **Mit Tuto verbinden.** Oben rechts „Mit Tuto verbinden“ → im Browser bei Tuto anmelden → **Erlauben** → die
    Rückfrage des Browsers („Tuto Mic öffnen?“) bestätigen. Oben rechts steht dann der eigene Name.

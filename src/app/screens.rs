@@ -103,7 +103,7 @@ impl TutoMicApp {
             ui.label(RichText::new("Einmalige Einrichtung").font(theme::heading(18.0)));
             ui.label(
                 RichText::new(
-                    "Für die Spracherkennung wird ein Modell geladen (ca. 550 MB). Danach läuft alles ohne Internet.",
+                    "Für die Spracherkennung wird ein Modell geladen (ca. 1,6 GB). Danach läuft alles ohne Internet.",
                 )
                 .color(theme::weak_text(ui)),
             );

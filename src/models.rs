@@ -10,11 +10,12 @@ pub struct ModelSpec {
     pub url: &'static str,
 }
 
-/// large-v3-turbo, 5-bit quantisiert (~550 MB): kaum schlechter als die volle Variante (1,6 GB).
+/// large-v3-turbo in voller Genauigkeit (~1,6 GB). Die 5-Bit-Variante (550 MB) erkennt etwas schlechter; Tuto Mic
+/// setzt die Mindestqualität, die es später nur besser geben soll.
 pub const WHISPER: ModelSpec = ModelSpec {
-    label: "Whisper large-v3-turbo (q5_0)",
-    file: "ggml-large-v3-turbo-q5_0.bin",
-    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+    label: "Whisper large-v3-turbo",
+    file: "ggml-large-v3-turbo.bin",
+    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
 };
 
 /// Silero-VAD: verhindert Halluzinationen in Sprechpausen.
