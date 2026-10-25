@@ -1,27 +1,14 @@
-mod anonymize;
-mod app;
-mod audio;
-mod config;
-mod control;
-mod icons;
-mod llm;
-mod models;
-mod pipeline;
-mod prompts;
-mod recorder;
-mod session;
-mod transcribe;
-
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use tuto_mic::{app, config, models, pipeline, prompts, session};
 
 /// Tuto Mic – Unterricht aufnehmen, lokal transkribieren, pseudonymisieren und zusammenfassen.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// Dev-Modus: Prompt-Editor, Datei-Import, Original-Transkript (auch per TUTO_MIC_DEV=1).
+    /// Dev-Modus: Prompt-Editor, Datei-Import, Original-Transkript (auch per `TUTO_MIC_DEV=1`).
     #[arg(long)]
     dev: bool,
     #[command(subcommand)]
@@ -84,7 +71,7 @@ fn main() -> anyhow::Result<()> {
             });
             let notify: pipeline::Notify = Arc::new(|| {});
             let outcome = pipeline::run(
-                pipeline::Source::File(audio),
+                &pipeline::Source::File(audio),
                 &opts,
                 &tx,
                 &notify,

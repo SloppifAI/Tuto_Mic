@@ -58,8 +58,34 @@ impl Config {
 
     pub fn save(&self) -> Result<()> {
         let path = Self::path();
-        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::create_dir_all(path.parent().expect("Konfigurationspfad liegt in einem Verzeichnis"))?;
         std::fs::write(&path, serde_json::to_string_pretty(self)?)
             .with_context(|| format!("Konfiguration nicht schreibbar: {}", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_fields_fall_back_to_defaults() {
+        let cfg: Config = serde_json::from_str(r#"{"ollama_model": "nimble:9b"}"#).unwrap();
+        assert_eq!(cfg.ollama_model, "nimble:9b");
+        assert_eq!(cfg.language, "de");
+        assert_eq!(cfg.segment_secs, 10);
+        assert!(cfg.delete_audio_after_transcription);
+        assert_eq!(cfg.class_list, Vec::<String>::new());
+    }
+
+    #[test]
+    fn roundtrips_through_json() {
+        let cfg = Config {
+            class_list: vec!["Lena Wagner".into()],
+            ..Config::default()
+        };
+        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.class_list, cfg.class_list);
+        assert_eq!(back.whisper_model, cfg.whisper_model);
     }
 }

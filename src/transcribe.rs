@@ -1,6 +1,7 @@
 use crate::config::Config;
 use anyhow::{Context, Result};
 use regex::Regex;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -66,18 +67,45 @@ pub fn transcribe(
 /// Bekannte Whisper-Halluzinationen bei Stille/Musik (aus Untertitel-Trainingsdaten).
 fn is_hallucination(text: &str) -> bool {
     static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-        Regex::new(r"(?i)Untertitel(ung|e) (des|im Auftrag des) (ZDF|WDR|NDR|SWR|BR)|Amara\.org").unwrap()
+        Regex::new(r"(?i)Untertitel(ung|e)? (des|im Auftrag des) (ZDF|WDR|NDR|SWR|BR)|Amara\.org")
+            .expect("festes, gültiges Muster")
     });
     RE.is_match(text)
 }
 
 /// Kompaktes Format für LLMs: `[mm:ss] text` pro Zeile.
 pub fn to_text(segments: &[Segment]) -> String {
-    segments
-        .iter()
-        .map(|s| {
-            let secs = s.start_ms / 1000;
-            format!("[{:02}:{:02}] {}\n", secs / 60, secs % 60, s.text)
-        })
-        .collect()
+    segments.iter().fold(String::new(), |mut out, s| {
+        let secs = s.start_ms / 1000;
+        let _ = writeln!(out, "[{:02}:{:02}] {}", secs / 60, secs % 60, s.text);
+        out
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_subtitle_hallucinations() {
+        assert!(is_hallucination("Untertitelung des ZDF, 2020"));
+        assert!(is_hallucination("Untertitel im Auftrag des ZDF für funk, 2017"));
+        assert!(is_hallucination("Untertitel von Amara.org"));
+        assert!(!is_hallucination("Wir schreiben heute die Untertitel für unser Video."));
+    }
+
+    #[test]
+    fn formats_lines_with_timestamps() {
+        let segments = [
+            Segment {
+                start_ms: 5_400,
+                text: "Guten Morgen.".into(),
+            },
+            Segment {
+                start_ms: 3_725_000,
+                text: "Hausaufgabe.".into(),
+            },
+        ];
+        assert_eq!(to_text(&segments), "[00:05] Guten Morgen.\n[62:05] Hausaufgabe.\n");
+    }
 }

@@ -81,3 +81,57 @@ fn strip_think(s: &str) -> String {
         _ => s.trim().to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_http::serve_once;
+
+    #[test]
+    fn strips_think_block() {
+        assert_eq!(strip_think("<think>\nGrübel\n</think>\n\n# Titel"), "# Titel");
+        assert_eq!(strip_think("  # Titel\n"), "# Titel");
+        assert_eq!(strip_think("</think> kaputt <think>"), "</think> kaputt <think>");
+    }
+
+    #[test]
+    fn generate_sends_request_and_parses_answer() {
+        let (url, server) = serve_once(
+            200,
+            r#"{"response":"<think>x</think># Mathe","prompt_eval_count":12,"eval_count":3}"#,
+        );
+        let g = Ollama::new(&format!("{url}/"))
+            .generate("qwen3.5:9b", "Fasse zusammen", 4096)
+            .unwrap();
+        assert_eq!(g.text, "# Mathe");
+        assert_eq!((g.prompt_tokens, g.output_tokens), (12, 3));
+
+        let req = server.join().unwrap();
+        assert!(req.head.starts_with("POST /api/generate "), "{}", req.head);
+        let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+        assert_eq!(body["model"], "qwen3.5:9b");
+        assert_eq!(body["prompt"], "Fasse zusammen");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["think"], false);
+        assert_eq!(body["options"]["num_ctx"], 4096);
+    }
+
+    #[test]
+    fn lists_models() {
+        let (url, _server) = serve_once(200, r#"{"models":[{"name":"qwen3.5:9b"},{"name":"nimble:9b"}]}"#);
+        assert_eq!(Ollama::new(&url).models().unwrap(), ["qwen3.5:9b", "nimble:9b"]);
+    }
+
+    #[test]
+    fn unreachable_server_gives_helpful_error() {
+        // Port 9 (discard) ist lokal praktisch nie belegt.
+        let err = Ollama::new("http://127.0.0.1:9").models().unwrap_err();
+        assert!(format!("{err:#}").contains("ollama serve"), "{err:#}");
+    }
+
+    #[test]
+    fn http_error_is_reported() {
+        let (url, _server) = serve_once(404, r#"{"error":"model not found"}"#);
+        assert!(Ollama::new(&url).generate("fehlt", "x", 1024).is_err());
+    }
+}

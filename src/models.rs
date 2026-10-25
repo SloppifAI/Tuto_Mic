@@ -47,9 +47,36 @@ pub fn download(url: &str, dest: &Path, mut progress: impl FnMut(u64, Option<u64
         done += n as u64;
         progress(done, total);
     }
-    if total.is_some_and(|t| t != done) {
-        bail!("Download unvollständig: {done} von {} Bytes", total.unwrap());
+    if let Some(total) = total.filter(|&t| t != done) {
+        bail!("Download unvollständig: {done} von {total} Bytes");
     }
     std::fs::rename(part, dest)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_http::serve_once;
+
+    #[test]
+    fn downloads_to_destination_and_reports_progress() {
+        let (url, _server) = serve_once(200, "modell-daten");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("sub/model.bin");
+        let mut last = (0, None);
+        download(&format!("{url}/model.bin"), &dest, |done, total| last = (done, total)).unwrap();
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "modell-daten");
+        assert!(!dest.with_extension("part").exists());
+        assert_eq!(last, (12, Some(12)));
+    }
+
+    #[test]
+    fn failed_download_leaves_no_model_file() {
+        let (url, _server) = serve_once(404, "nicht gefunden");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model.bin");
+        assert!(download(&url, &dest, |_, _| {}).is_err());
+        assert!(!dest.exists());
+    }
 }

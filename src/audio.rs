@@ -33,7 +33,7 @@ impl StreamResampler {
             inner,
             pending: Vec::new(),
             out_buf: Vec::new(),
-            ratio: WHISPER_RATE as f64 / from_rate as f64,
+            ratio: f64::from(WHISPER_RATE) / f64::from(from_rate),
         })
     }
 
@@ -60,7 +60,7 @@ impl StreamResampler {
 
     /// Restliche Samples verarbeiten (mit Stille aufgefüllt, Überhang abgeschnitten).
     pub fn finish(mut self, out: &mut Vec<f32>) -> Result<()> {
-        let Some(need) = self.inner.as_ref().map(|r| r.input_frames_next()) else {
+        let Some(need) = self.inner.as_ref().map(rubato::Resampler::input_frames_next) else {
             return Ok(());
         };
         if self.pending.is_empty() {
@@ -90,7 +90,7 @@ pub fn load_segments(audio_dir: &Path) -> Result<Vec<f32>> {
         samples.extend(
             reader
                 .samples::<i16>()
-                .map(|s| s.map(|s| s as f32 / i16::MAX as f32))
+                .map(|s| s.map(|s| f32::from(s) / f32::from(i16::MAX)))
                 .collect::<Result<Vec<_>, _>>()?,
         );
     }
@@ -103,11 +103,11 @@ pub fn load_file(path: &Path) -> Result<Vec<f32>> {
     use symphonia::core::errors::Error;
     use symphonia::core::formats::probe::Hint;
     use symphonia::core::formats::{FormatOptions, TrackType};
-    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
     use symphonia::core::meta::MetadataOptions;
 
     let file = std::fs::File::open(path).with_context(|| format!("Datei nicht lesbar: {}", path.display()))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         hint.with_extension(ext);
@@ -150,7 +150,7 @@ pub fn load_file(path: &Path) -> Result<Vec<f32>> {
                 .chunks(channels)
                 .map(|f| f.iter().sum::<f32>() / channels as f32),
         );
-        resampler.as_mut().unwrap().push(&mono, &mut out)?;
+        resampler.as_mut().expect("oben angelegt").push(&mono, &mut out)?;
     }
     if let Some(r) = resampler {
         r.finish(&mut out)?;
@@ -173,5 +173,27 @@ mod tests {
         r.finish(&mut out).unwrap();
         let expected = 16_000 * 3;
         assert!((out.len() as i64 - expected).abs() < 1100, "len {}", out.len());
+    }
+
+    #[test]
+    fn loads_segments_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: WHISPER_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        // Absichtlich in umgekehrter Reihenfolge anlegen.
+        for (name, value) in [("seg_00002.wav", 2000i16), ("seg_00001.wav", 1000)] {
+            let mut w = hound::WavWriter::create(dir.path().join(name), spec).unwrap();
+            for _ in 0..100 {
+                w.write_sample(value).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        let samples = load_segments(dir.path()).unwrap();
+        assert_eq!(samples.len(), 200);
+        assert!(samples[0] < samples[199], "Segment 1 muss vor Segment 2 stehen");
     }
 }

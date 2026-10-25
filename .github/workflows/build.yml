@@ -22,11 +22,23 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  dependencies:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-machete
+      # Sicherheitslücken, Lizenzen, Herkunft der Crates (siehe deny.toml)
+      - run: cargo deny check
+      # Ungenutzte Abhängigkeiten
+      - run: cargo machete
 
   build:
-    needs: check
+    needs: [check, dependencies]
     strategy:
       fail-fast: false
       matrix:

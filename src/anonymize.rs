@@ -40,7 +40,7 @@ impl Pseudonymizer {
             (r"\+?\d[\d /-]{7,}\d", "[Telefon]"),
             (r"\b(Herr|Frau)\s+[A-ZÄÖÜ][\wäöüß-]+", "[Lehrkraft]"),
         ] {
-            rules.push((Regex::new(pattern).unwrap(), label.to_string()));
+            rules.push((Regex::new(pattern).expect("festes, gültiges Muster"), label.to_string()));
         }
         Self { rules }
     }

@@ -7,9 +7,9 @@ use crate::recorder::Recorder;
 use crate::{llm, models, session};
 use eframe::egui::{self, Color32, RichText};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -110,7 +110,7 @@ impl TutoMicApp {
             Command::Stop => self.stop_recording(ctx),
             Command::DeleteLast { minutes } => {
                 if let Some((r, _)) = &self.recorder {
-                    r.delete_last(Duration::from_secs(minutes as u64 * 60));
+                    r.delete_last(Duration::from_secs(u64::from(minutes) * 60));
                 }
                 Ok(())
             }
@@ -201,7 +201,7 @@ impl TutoMicApp {
                         continue;
                     }
                     models::download(spec.url, &dest, |done, total| {
-                        *p.lock().unwrap() = match total {
+                        *p.lock().unwrap_or_else(PoisonError::into_inner) = match total {
                             Some(t) => format!("{}: {} / {} MB", spec.label, done >> 20, t >> 20),
                             None => format!("{}: {} MB", spec.label, done >> 20),
                         };
@@ -218,6 +218,7 @@ impl TutoMicApp {
 
     // ---------- UI ----------
 
+    #[expect(clippy::too_many_lines, reason = "wird bei der Vereinfachung der GUI aufgeteilt")]
     fn ui_recording(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let state = self.state();
@@ -229,7 +230,7 @@ impl TutoMicApp {
                     Some(Download::Running { progress, .. }) => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(progress.lock().unwrap().clone());
+                            ui.label(progress.lock().unwrap_or_else(PoisonError::into_inner).clone());
                         });
                     }
                     other => {
@@ -317,11 +318,7 @@ impl TutoMicApp {
                             ui.selectable_value(&mut self.delete_minutes, m, format!("{m} min"));
                         }
                     });
-                if !self.confirm_delete {
-                    if ui.button("Löschen …").clicked() {
-                        self.confirm_delete = true;
-                    }
-                } else {
+                if self.confirm_delete {
                     ui.label(RichText::new("Wirklich unwiderruflich löschen?").strong());
                     if ui.button("Ja, löschen").clicked() {
                         self.handle(
@@ -335,6 +332,8 @@ impl TutoMicApp {
                     if ui.button("Abbrechen").clicked() {
                         self.confirm_delete = false;
                     }
+                } else if ui.button("Löschen …").clicked() {
+                    self.confirm_delete = true;
                 }
             });
             ui.label(

@@ -7,10 +7,12 @@ use std::path::PathBuf;
 
 pub const BUILTIN: &str = include_str!("../prompts/summary.md");
 
+/// Stelle im Prompt, an der das Transkript eingesetzt wird. Fehlt sie, wird das Transkript angehängt.
+pub const TRANSCRIPT_PLACEHOLDER: &str = "{{TRANSKRIPT}}";
+
 pub fn override_dir() -> PathBuf {
     std::env::var_os("TUTO_MIC_PROMPTS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| crate::config::dirs().config_dir().join("prompts"))
+        .map_or_else(|| crate::config::dirs().config_dir().join("prompts"), PathBuf::from)
 }
 
 fn override_path() -> PathBuf {
@@ -26,6 +28,15 @@ pub fn load() -> String {
     std::fs::read_to_string(override_path()).unwrap_or_else(|_| BUILTIN.to_string())
 }
 
+/// Setzt das Transkript in den Prompt ein.
+pub fn render(prompt: &str, transcript: &str) -> String {
+    if prompt.contains(TRANSCRIPT_PLACEHOLDER) {
+        prompt.replace(TRANSCRIPT_PLACEHOLDER, transcript.trim_end())
+    } else {
+        format!("{prompt}{transcript}")
+    }
+}
+
 pub fn save(text: &str) -> Result<()> {
     std::fs::create_dir_all(override_dir())?;
     std::fs::write(override_path(), text)?;
@@ -38,4 +49,25 @@ pub fn reset() -> Result<()> {
         std::fs::remove_file(path)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_prompt_has_placeholder() {
+        assert_eq!(BUILTIN.matches(TRANSCRIPT_PLACEHOLDER).count(), 1);
+    }
+
+    #[test]
+    fn render_inserts_transcript_at_placeholder() {
+        let out = render("Vorher\n<t>\n{{TRANSKRIPT}}\n</t>\n", "[00:01] Hallo\n");
+        assert_eq!(out, "Vorher\n<t>\n[00:01] Hallo\n</t>\n");
+    }
+
+    #[test]
+    fn render_appends_without_placeholder() {
+        assert_eq!(render("Prompt:\n", "[00:01] Hallo\n"), "Prompt:\n[00:01] Hallo\n");
+    }
 }

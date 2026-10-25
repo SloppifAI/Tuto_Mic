@@ -46,7 +46,7 @@ pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 pub fn spawn(source: Source, opts: Options, tx: Sender<Progress>, notify: Notify, abort: Arc<AtomicBool>) {
     std::thread::spawn(move || {
-        let msg = match run(source, &opts, &tx, &notify, abort) {
+        let msg = match run(&source, &opts, &tx, &notify, abort) {
             Ok(outcome) => Progress::Done(Box::new(outcome)),
             Err(e) => Progress::Failed(format!("{e:#}")),
         };
@@ -56,7 +56,7 @@ pub fn spawn(source: Source, opts: Options, tx: Sender<Progress>, notify: Notify
 }
 
 pub fn run(
-    source: Source,
+    source: &Source,
     opts: &Options,
     tx: &Sender<Progress>,
     notify: &Notify,
@@ -72,7 +72,7 @@ pub fn run(
 
     step("Audio laden …".into());
     let t = Instant::now();
-    let (dir, samples) = match &source {
+    let (dir, samples) = match source {
         Source::Session(dir) => (dir.clone(), audio::load_segments(&session::audio_dir(dir))?),
         Source::File(path) => {
             let label = path.file_stem().and_then(|s| s.to_str());
@@ -80,7 +80,7 @@ pub fn run(
             (dir, audio::load_file(path)?)
         }
     };
-    let audio_secs = samples.len() as f64 / audio::WHISPER_RATE as f64;
+    let audio_secs = samples.len() as f64 / f64::from(audio::WHISPER_RATE);
     log.push(format!(
         "Audio: {audio_secs:.0} s, geladen in {:.1} s",
         t.elapsed().as_secs_f64()
@@ -129,7 +129,7 @@ pub fn run(
         step(format!("Zusammenfassung mit {} …", cfg.ollama_model));
         match ollama.generate(
             &cfg.ollama_model,
-            &format!("{}{}", opts.summary_prompt, outcome.transcript_anon),
+            &crate::prompts::render(&opts.summary_prompt, &outcome.transcript_anon),
             cfg.num_ctx,
         ) {
             Ok(g) => {
@@ -144,9 +144,19 @@ pub fn run(
         }
     }
 
-    // Export-Paket für die spätere Aufgabenerstellung (z. B. Cloud-Modell): nur pseudonymisierte
-    // Daten, kein Audio, kein Original-Transkript, keine Namenszuordnung.
-    let export = json!({
+    let export = export_json(opts, &outcome, audio_secs);
+    std::fs::write(dir.join("export.json"), serde_json::to_string_pretty(&export)?)?;
+    std::fs::write(dir.join("log.txt"), log.join("\n") + "\n")?;
+    outcome.log = log;
+    step("Fertig".into());
+    Ok(outcome)
+}
+
+/// Export-Paket für die spätere Aufgabenerstellung (z. B. Cloud-Modell): nur pseudonymisierte Daten, kein
+/// Audio, kein Original-Transkript, keine Namenszuordnung.
+fn export_json(opts: &Options, outcome: &Outcome, audio_secs: f64) -> serde_json::Value {
+    let cfg = &opts.cfg;
+    json!({
         "format": "tuto-mic/lesson@1",
         "created": chrono::Local::now().to_rfc3339(),
         "app_version": env!("CARGO_PKG_VERSION"),
@@ -158,10 +168,33 @@ pub fn run(
             "transcription": cfg.whisper_model.file_name().map(|f| f.to_string_lossy()),
             "summary": if opts.skip_llm { None } else { Some(&cfg.ollama_model) },
         },
-    });
-    std::fs::write(dir.join("export.json"), serde_json::to_string_pretty(&export)?)?;
-    std::fs::write(dir.join("log.txt"), log.join("\n") + "\n")?;
-    outcome.log = log;
-    step("Fertig".into());
-    Ok(outcome)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_contains_only_pseudonymized_data() {
+        let cfg = Config {
+            class_list: vec!["Lena Wagner".into()],
+            ..Config::default()
+        };
+        let opts = Options {
+            cfg,
+            summary_prompt: String::new(),
+            skip_llm: false,
+        };
+        let outcome = Outcome {
+            transcript: "[00:01] Lena Wagner, bitte.\n".into(),
+            transcript_anon: "[00:01] [Schüler A], bitte.\n".into(),
+            summary: Some("Eine Schülerin rechnete vor.".into()),
+            ..Outcome::default()
+        };
+        let export = export_json(&opts, &outcome, 61.4).to_string();
+        assert!(!export.contains("Lena") && !export.contains("Wagner"), "{export}");
+        assert!(export.contains("[Schüler A]"));
+        assert!(export.contains("\"audio_seconds\":61.0"));
+    }
 }

@@ -44,18 +44,30 @@ Der Zusammenfassungs-Prompt `prompts/summary.md` ist in die App eingebaut. Zum T
 - per Verzeichnis: `TUTO_MIC_PROMPTS=./meine-prompts tuto-mic process stunde.mp3`
   (Datei `summary.md`; fehlt sie, gilt die eingebaute Version).
 
-Das Transkript (`[mm:ss] text` pro Zeile) wird direkt an den Prompt angehängt.
+Das Transkript (`[mm:ss] text` pro Zeile) ersetzt den Platzhalter `{{TRANSKRIPT}}`; fehlt er, wird es angehängt.
 
 ## Entwicklung
 
-Mit Nix (empfohlen, enthält Rust, cmake, clang und die GUI-/Audio-Bibliotheken):
+Mit Nix (empfohlen, enthält Rust, rust-analyzer, cmake, clang, die GUI-/Audio-Bibliotheken und die Prüfwerkzeuge).
+Mit direnv lädt `.envrc` die Umgebung automatisch, auch für den Editor (`direnv allow`).
 
 ```sh
 nix develop                  # CPU
 nix develop .#cuda           # NVIDIA, dann: cargo run --release --features cuda
 cargo run -- --dev
-cargo test
 ```
+
+Qualitätsprüfungen (laufen auch in der CI):
+
+```sh
+cargo test                                  # Unit-Tests, ohne Modelle, Mikrofon oder Ollama
+cargo clippy --all-targets -- -D warnings   # Lints, inkl. clippy::pedantic (Cargo.toml)
+cargo fmt --check
+cargo deny check                            # Sicherheitslücken, Lizenzen (deny.toml)
+cargo machete                               # ungenutzte Abhängigkeiten
+```
+
+Regeln für Beiträge (auch für KI-Agenten): `AGENTS.md`.
 
 Ohne Nix: Rust (stable), cmake, clang/libclang; unter Linux zusätzlich
 `libasound2-dev libxkbcommon-dev libwayland-dev`.
@@ -74,6 +86,7 @@ Installer.
 
 | Modul | Aufgabe |
 |---|---|
+| `src/main.rs`, `src/lib.rs` | Einstieg (CLI/GUI) bzw. Bibliothek mit der gesamten Logik |
 | `src/app.rs` | egui-Oberfläche |
 | `src/control.rs` | Befehle (Start/Pause/Stop/Löschen) und Aufnahmezustand – Schnittstelle für späteren Hardware-Taster |
 | `src/recorder.rs` | Mikrofon (cpal), Resampling, Segment-Dateien, rückwirkendes Löschen |
