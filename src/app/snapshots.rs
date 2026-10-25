@@ -235,6 +235,17 @@ fn ui_preview() {
         TutoMicApp::draw,
     );
     page(
+        "14-passwort",
+        false,
+        |ctx| app(ctx, TutoPanel::offline(), None, true),
+        |a, ui| {
+            let mut lock = super::lock::LockScreen::default();
+            egui::CentralPanel::default().show(ui, |ui| {
+                lock.ui(ui, &a.brand);
+            });
+        },
+    );
+    page(
         "09-bereit-dunkel",
         true,
         |ctx| app(ctx, TutoPanel::offline(), None, true),

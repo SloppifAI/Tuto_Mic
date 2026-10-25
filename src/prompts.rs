@@ -15,7 +15,7 @@ pub fn override_dir() -> PathBuf {
         .map_or_else(|| crate::config::dirs().config_dir().join("prompts"), PathBuf::from)
 }
 
-fn override_path() -> PathBuf {
+pub fn override_path() -> PathBuf {
     override_dir().join("summary.md")
 }
 

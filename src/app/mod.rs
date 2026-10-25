@@ -3,6 +3,7 @@
 //! Admin-Modus (`--admin`); sonst gelten die zentralen Vorgaben (Datei oder Umgebungsvariablen, siehe `config`).
 
 mod admin;
+mod lock;
 mod screens;
 
 use crate::config::Config;
@@ -502,3 +503,47 @@ fn stage_of(step: &str) -> usize {
 
 #[cfg(test)]
 mod snapshots;
+
+/// Fenster der App: erst der Sperrbildschirm, nach dem Entsperren [`TutoMicApp`]. Die Konfiguration (mit
+/// Klassenliste) wird erst geladen, wenn der Schlüssel aus dem Passwort da ist.
+pub struct Root {
+    mode: Mode,
+    brand: Brand,
+    lock: lock::LockScreen,
+    app: Option<TutoMicApp>,
+}
+
+impl Root {
+    pub fn new(ctx: &egui::Context, mode: Mode) -> Self {
+        theme::install(ctx);
+        Self {
+            mode,
+            brand: Brand::load(ctx),
+            lock: lock::LockScreen::default(),
+            app: None,
+        }
+    }
+}
+
+impl eframe::App for Root {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if let Some(app) = &mut self.app {
+            app.ui(ui, frame);
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        let mut unlocked = false;
+        egui::CentralPanel::default().show(ui, |ui| {
+            unlocked = self.lock.ui(ui, &self.brand);
+        });
+        if unlocked {
+            self.app = Some(TutoMicApp::new(&ctx, self.mode));
+        }
+    }
+
+    fn on_exit(&mut self) {
+        if let Some(app) = &mut self.app {
+            app.on_exit();
+        }
+    }
+}

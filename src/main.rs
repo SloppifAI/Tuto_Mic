@@ -82,13 +82,13 @@ fn main() -> anyhow::Result<()> {
             eframe::run_native(
                 "Tuto Mic",
                 options,
-                Box::new(move |cc| Ok(Box::new(app::TutoMicApp::new(&cc.egui_ctx, app::Mode { admin })))),
+                Box::new(move |cc| Ok(Box::new(app::Root::new(&cc.egui_ctx, app::Mode { admin })))),
             )
             .map_err(|e| anyhow::anyhow!("GUI-Fehler: {e}"))
         }
         Some(Cmd::Process { file, no_llm }) => process(file, no_llm),
         Some(Cmd::Download) => {
-            let cfg = config::Config::load()?;
+            let cfg = load_config()?;
             for (spec, dest) in [(models::WHISPER, &cfg.whisper_model), (models::VAD, &cfg.vad_model)] {
                 if dest.is_file() {
                     eprintln!("{} vorhanden: {}", spec.label, dest.display());
@@ -99,7 +99,7 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Some(Cmd::Tuto { cmd }) => tuto::cli::run(cmd, &config::Config::load()?),
+        Some(Cmd::Tuto { cmd }) => tuto::cli::run(cmd, &load_config()?),
         Some(Cmd::Paths) => {
             println!("Konfiguration: {}", config::Config::path().display());
             println!("Prompts:       {}", prompts::override_dir().display());
@@ -113,7 +113,7 @@ fn main() -> anyhow::Result<()> {
 
 fn process(file: PathBuf, no_llm: bool) -> anyhow::Result<()> {
     let opts = pipeline::Options {
-        cfg: config::Config::load()?,
+        cfg: load_config()?,
         summary_prompt: prompts::load(),
         skip_llm: no_llm,
         keep_original_transcript: true,
@@ -156,7 +156,7 @@ fn process(file: PathBuf, no_llm: bool) -> anyhow::Result<()> {
 
 /// Version, GPU und die gültige Konfiguration – für Betreuer, die Lehrkräfte sehen keine Einstellungen.
 fn info() -> anyhow::Result<()> {
-    let cfg = config::Config::load()?;
+    let cfg = load_config()?;
     let state = |p: &std::path::Path| if p.is_file() { "vorhanden" } else { "fehlt" };
     println!("Tuto Mic {}", env!("CARGO_PKG_VERSION"));
     let whisper = &cfg.whisper_model;
@@ -206,4 +206,33 @@ fn info() -> anyhow::Result<()> {
         println!("  {name:<24} {what}{set}");
     }
     Ok(())
+}
+
+/// Konfiguration für die Kommandozeile: vorher mit dem Passwort entsperren (`TUTO_MIC_PASSWORD` oder Eingabe).
+fn load_config() -> anyhow::Result<config::Config> {
+    use tuto_mic::unlock::{self, Status};
+    match unlock::status() {
+        Status::Unlocked => {}
+        Status::NeedsSetup => {
+            let password = std::env::var("TUTO_MIC_PASSWORD").map_err(|_| {
+                anyhow::anyhow!(
+                    "Noch kein Passwort festgelegt – bitte zuerst die App starten (oder TUTO_MIC_PASSWORD setzen)"
+                )
+            })?;
+            unlock::setup(&password)?;
+        }
+        Status::Locked => {
+            let password = if let Ok(p) = std::env::var("TUTO_MIC_PASSWORD") {
+                p
+            } else {
+                // Entwicklerwerkzeug: einfache Eingabe; das Passwort ist dabei im Terminal sichtbar.
+                eprint!("Passwort für Tuto Mic: ");
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                line.trim_end_matches(['\r', '\n']).to_string()
+            };
+            unlock::unlock(&password)?;
+        }
+    }
+    config::Config::load()
 }

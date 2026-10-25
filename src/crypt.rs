@@ -60,11 +60,6 @@ impl Key {
         Ok(Self(Box::new(array)))
     }
 
-    /// Die Schlüssel-Bytes, nur um sie im Schlüsselbund abzulegen.
-    fn as_bytes(&self) -> &[u8] {
-        self.0.as_slice()
-    }
-
     fn cipher(&self) -> XChaCha20Poly1305 {
         XChaCha20Poly1305::new(<&chacha20poly1305::Key>::from(&*self.0))
     }
@@ -135,30 +130,23 @@ pub fn decrypt(key: &Key, data: &[u8]) -> Result<Vec<u8>> {
         .map_err(|_| anyhow::anyhow!("Entschlüsselung fehlgeschlagen: falscher Schlüssel oder Datei beschädigt"))
 }
 
-/// Dauerhafter Schlüssel für die Konfiguration (Klassenliste, Prompt, Einstellungen). Liegt im Schlüsselbund des
-/// Betriebssystems, den die Anmeldung am Rechner entsperrt; wird beim ersten Bedarf zufällig erzeugt. Anders als
-/// der Sitzungsschlüssel überdauert er Neustarts.
+/// Schlüssel für die Konfiguration (Klassenliste, Prompt, Einstellungen): aus dem Passwort abgeleitet, siehe
+/// [`crate::unlock`]. Fehler, solange die App gesperrt ist.
 pub fn config_key() -> Result<Key> {
-    static CACHE: std::sync::OnceLock<Result<Key, String>> = std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| load_or_create_config_key().map_err(|e| format!("{e:#}")))
-        .clone()
-        .map_err(|e| anyhow::anyhow!(e))
+    crate::unlock::key()
 }
 
-fn load_or_create_config_key() -> Result<Key> {
-    let entry =
-        keyring::Entry::new("tuto-mic", "config-key").context("Schlüsselbund des Betriebssystems nicht verfügbar")?;
-    match entry.get_secret() {
-        Ok(bytes) => Key::from_bytes(&bytes),
-        Err(keyring::Error::NoEntry) => {
-            let key = Key::generate()?;
-            entry
-                .set_secret(key.as_bytes())
-                .context("Schlüssel für die Konfiguration nicht im Schlüsselbund speicherbar")?;
-            Ok(key)
-        }
-        Err(e) => Err(e).context("Schlüsselbund nicht lesbar"),
+/// Schlüssel früherer Versionen aus dem Schlüsselbund, nur um deren Konfiguration beim Festlegen des Passworts zu
+/// übernehmen. `None`, wenn es keinen gibt.
+pub fn legacy_config_key() -> Option<Key> {
+    let entry = keyring::Entry::new("tuto-mic", "config-key").ok()?;
+    Key::from_bytes(&entry.get_secret().ok()?).ok()
+}
+
+/// Den früheren Schlüssel aus dem Schlüsselbund entfernen, sobald die Konfiguration übernommen ist.
+pub fn forget_legacy_config_key() {
+    if let Ok(entry) = keyring::Entry::new("tuto-mic", "config-key") {
+        let _ = entry.delete_credential();
     }
 }
 
@@ -167,9 +155,7 @@ fn load_or_create_config_key() -> Result<Key> {
 pub fn read_protected(path: &Path, key: Option<&Key>) -> Result<Option<String>> {
     let enc = encrypted_path(path);
     if enc.exists() {
-        let key = key.context(
-            "Konfiguration ist verschlüsselt, aber der Schlüsselbund des Betriebssystems ist nicht verfügbar",
-        )?;
+        let key = key.context("Konfiguration ist verschlüsselt und Tuto Mic ist noch gesperrt")?;
         let bytes = read(&enc, key)?;
         return String::from_utf8(bytes)
             .map(Some)

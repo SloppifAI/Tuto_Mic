@@ -22,6 +22,7 @@ pub mod theme;
 pub mod transcribe;
 pub mod tuto;
 pub mod tuto_panel;
+pub mod unlock;
 
 #[cfg(test)]
 mod test_http;
