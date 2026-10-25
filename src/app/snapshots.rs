@@ -242,6 +242,12 @@ fn ui_preview() {
         TutoMicApp::draw,
     );
     page(
+        "17-neue-stunde-vorab",
+        false,
+        |ctx| app(ctx, TutoPanel::demo_plan_new_lesson(), None, true),
+        TutoMicApp::draw,
+    );
+    page(
         "15-namen-warnung",
         false,
         |ctx| {
